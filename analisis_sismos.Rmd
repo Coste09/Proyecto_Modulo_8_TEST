@@ -1,0 +1,768 @@
+---
+title: "Análisis Sismos"
+author: "Equipo 7"
+date: "2026-09-14"
+output: html_document
+---
+
+
+1. Pregunta de Investigación
+
+¿Cómo se distribuye espacial y temporalmente la sismicidad de alto impacto (magnitud $\ge$ 5) en México, y es posible identificar perfiles estadísticamente diferenciables de acuerdo a sus comportamiento sísmico mediante técnicas de aprendizaje no supervisado?
+
+2. Preguntas Secundarias
+
+- ¿Existe una correlación estadística significativa entre la profundidad y la magnitud de los sismos?
+
+- ¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
+
+- ¿Qué patrones de comportamiento temporal (precursores y réplicas) se observan alrededor de los eventos de magnitud extrema?
+
+- ¿Cómo cambia la frecuencia probabilística de eventos sísmicos en función del umbral de magnitud seleccionado?
+
+Hipótesis: La sismicidad de alto riesgo en México presenta una distribución espacial y temporal heterogénea que puede ser agrupada en regiones con perfiles de comportamiento sísmico distinguibles matemáticamente.
+
+Variable Objetivo (Target Variable):
+
+Nota metodológica: Al utilizar principalmente un enfoque de aprendizaje no supervisado (K-Means), no existe una variable dependiente estricta a predecir. Sin embargo, para fines de análisis estadístico, la Magnitud funge como la variable focal de interés, mientras que el Perfil Sísmico (Clúster) es la variable objetivo generada por el algoritmo.
+
+Variables Explicativas: Latitud, Longitud, Profundidad y Tiempo (Fecha/Hora).
+
+Población de Interés: Toda la actividad tectónica y sísmica generada por la interacción de placas que afecte el territorio nacional.
+
+Unidad de Análisis: Cada evento sísmico individual registrado por la red instrumental.
+
+Periodo: 2010 a la actualidad. (Nota: ajusta este año si el rango de tu descarga del USGS fue diferente).
+
+Alcance Geográfico: Territorio continental de los Estados Unidos Mexicanos y sus franjas tectónicas marítimas adyacentes (Golfo de California, Océano Pacífico y la Trinchera Mesoamericana).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dlookr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)   #Fechas
+ 
+
+#=========================
+library(corrplot)   # correlación
+
+#=========================
+library(ggplot2)
+library(GGally)     # ggpairs
+
+#=========================
+library(leaflet)    # Mapa interactivo
+library(sf)         # simple features
+library(maps)
+library(grid)
+
+#========================
+library(factoextra)
+
+
+tema <- theme_minimal()+
+  theme(
+    plot.title = element_text(size = 16),
+    axis.title.x = element_text(size = 13, margin = margin(t = 10), hjust=0.5),
+    axis.title.y = element_text(size = 13, margin = margin(r = 10), hjust=0.5),
+    axis.title.y.right = element_text(size = 13, margin = margin(l = 10), hjust = 0.5),
+    axis.text.y.right = element_text(size = 12),
+    legend.title = element_text(size = 13, hjust = 0.5),
+    legend.text = element_text(size = 11),
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+  )
+
+
+
+```
+
+
+
+## Lectura de datos
+
+Las coordenadas que utilizamos forman lo que en cartografía y programación se conoce como un "Bounding Box" (caja delimitadora).
+
+Dado que la API del USGS solo entiende rectángulos y no las formas irregulares de los países, la estrategia consiste en trazar un cuadrado imaginario tomando los puntos geográficos extremos de México y agregando un pequeño margen u holgura hacia afuera.
+
+- Latitud Máxima (max_lat = 33.0): El punto más al norte de México se encuentra en el Monumento 206 (Baja California), en la frontera con Estados Unidos, a una latitud de aproximadamente 32.7° N. Al usar 33.0, nos aseguramos de cubrir esa frontera y capturar sismos en el sistema de fallas de San Andrés que, aunque ocurran del lado estadounidense, afectan al territorio mexicano.
+
+- Latitud Mínima (min_lat = 14.0): El punto más al sur está en la desembocadura del río Suchiate (Chiapas), a unos 14.5° N. Al bajar a 14.0, el rectángulo se adentra un poco en el Océano Pacífico y Guatemala, lo cual es crucial para atrapar los sismos generados en la fosa mesoamericana (zona de subducción) que impactan a Chiapas y Oaxaca.
+
+- Longitud Mínima u Oeste (min_lon = -118.0): El extremo continental más occidental está en la costa de Baja California (cerca de Tijuana) a -117.1° W (las islas más lejanas, como Isla Guadalupe, llegan hasta -118.2°). Usar -118.0 cubre toda la península de Baja California y, muy importante, abarca todo el Golfo de California, que es una zona de alta actividad sísmica debido a la separación de placas.
+
+- Longitud Máxima o Este (max_lon = -86.0): El punto más oriental de México es Isla Mujeres (Quintana Roo), situado a -86.7° W. Al usar -86.0 garantizamos que toda la Península de Yucatán y sus costas del Caribe queden dentro del rectángulo.
+
+
+
+```{r}
+
+# Coordenadas aproximadas para México
+min_lat <- 14.0
+max_lat <- 33.0
+min_lon <- -118.0
+max_lon <- -86.0
+
+# Definir los años que queremos descargar
+anios <- 2015:2026
+
+# Magnitud mínima a descargar
+magnitud_minima<-5
+
+
+# Crear una lista vacía para guardar los datos de cada año
+lista_datos <- list()
+
+
+for (anio in anios) {
+  # Definir fecha de inicio y fin para cada bloque
+  fecha_inicio <- paste0(anio, "-01-01")
+  
+  # Si es el año actual (2026), cortamos en la fecha de hoy, sino en diciembre 31
+  fecha_fin <- ifelse(anio == 2026, as.character(Sys.Date()), paste0(anio, "-12-31"))
+  
+  url <- paste0("https://earthquake.usgs.gov/fdsnws/event/1/query?format=csv",
+              "&starttime=", fecha_inicio,
+              "&endtime=", fecha_fin,
+              "&minmagnitude=", magnitud_minima,
+              "&minlatitude=", min_lat,
+              "&maxlatitude=", max_lat,
+              "&minlongitude=", min_lon,
+              "&maxlongitude=", max_lon)
+  
+    # Descargar y guardar en la lista
+  mensaje <- paste("Descargando datos de", anio, "...")
+  print(mensaje)
+  
+  lista_datos[[as.character(anio)]] <- read.csv(url)
+  
+  # Pausa de 1 segundo para no saturar el servidor del USGS
+  Sys.sleep(3) 
+}
+
+# Unir todos los años en un solo Data Frame
+df <- do.call(rbind, lista_datos)
+
+
+```
+
+
+```{r}
+df <- df %>%
+  separate_wider_delim(
+    cols = place,
+    delim = ", ",                # Agrega un espacio después de la coma para limpiar el texto
+    names = c(NA, "pais"),
+    cols_remove = FALSE,
+    too_few = "align_start",     # Si no hay coma, rellena 'pais' con NA
+    too_many = "merge"           # Si hay varias comas, une todo el texto sobrante en 'pais'
+  )
+```
+
+
+```{r}
+colnames(df)
+```
+
+
+```{r}
+df|>str()
+```
+
+```{r}
+unique(df$pais)
+```
+
+```{r}
+unique(df$type)
+```
+
+```{r}
+table(df$type, useNA = "always")
+```
+
+# Filtrar solo los sismos
+
+
+```{r}
+df <-df%>%filter(type=="earthquake")
+```
+
+
+```{r}
+table(df$type, useNA = "always")
+```
+
+
+## Duplicados
+
+```{r}
+
+gestionar_duplicados <- function(datos) {
+  # Contamos las filas antes y después para saber cuántas se borraron
+  filas_iniciales <- nrow(datos)
+  datos_limpios <- datos %>% dplyr::distinct()
+  filas_finales <- nrow(datos_limpios)
+  
+  num_duplicados <- filas_iniciales - filas_finales
+  
+  if(num_duplicados == 0) {
+    print("No se encontraron filas duplicadas")
+  } else {
+    print(paste0("El dataframe contenía ", num_duplicados, " registros duplicados"))
+  }
+  
+  return(datos_limpios)
+}
+
+
+
+df <- gestionar_duplicados(df)
+
+```
+
+
+## Missing Values
+
+
+```{r}
+
+df_nas <- dlookr::diagnose(df)%>%
+  dplyr::select(variables, types, missing_count, missing_percent)%>%
+  arrange(desc(missing_percent))
+
+df_nas
+
+
+```
+
+
+#Missing Values: Gráfica de Pareto 
+
+```{r}
+
+# 1. Seleccionamos solo las variables que tienen NA's
+df_solo_nulos <- df %>% select(where(~any(is.na(.))))
+p <- suppressWarnings(dlookr::plot_na_pareto(df_solo_nulos))
+nombre_dataset <-"Sismos"
+
+# Calculamos el límite dinámico
+max_nas <- max(colSums(is.na(df_solo_nulos)))
+limite_superior <- max_nas * 1.05
+
+# 2. Modificamos los detalles
+p_custom <- p + 
+  labs(
+    title = paste0("Análisis de Valores Faltantes:", nombre_dataset),
+    x = "Variables",
+   ) +
+  theme(
+    plot.title = element_text(size = 16),
+    axis.title.x = element_text(size = 13, margin = margin(t = 10), hjust=0.5),
+    axis.title.y = element_text(size = 13, margin = margin(r = 10), hjust=0.5),
+    axis.text.x = element_text(hjust = 1, size = 12),
+    axis.title.y.right = element_text(size = 13, margin = margin(l = 10), hjust = 0.5),
+    axis.text.y.right = element_text(size = 12),
+    legend.title = element_text(size = 13, hjust = 0.5),
+    legend.text = element_text(size = 11),
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+  )+
+  coord_cartesian(ylim = c(0, limite_superior))
+
+# 3. Visualizar
+print(p_custom)
+
+```
+
+## Agregar conclusiones y decidir si elegimos alguna estrategia para imputar, aunque las variables con valores perdidos sugiero que no las incluyamos en el análisis
+
+
+```{r}
+
+dlookr::diagnose_numeric(df)
+
+
+```
+
+## Outliers utilizando el criterio del IQR
+
+```{r}
+
+numeric_columns <- names(df)[sapply(df, is.numeric)]
+numeric_columns
+#columnas <- c("depth", "mag")
+
+for (columna in numeric_columns){
+  Q3 <- quantile(x = df[[columna]], probs = 0.75, na.rm=TRUE)
+  Q1 <- quantile(x = df[[columna]], probs = 0.25, na.rm=TRUE)
+  IQR <- Q3 - Q1
+  limite_superior <- Q3 + 1.5*IQR
+  limite_inferior <- Q1 - 1.5*IQR
+  
+  n_outliers <- sum(df[[columna]]> limite_superior | df[[columna]]< limite_inferior, na.rm = TRUE )
+  pct_outliers <- (n_outliers/sum(!is.na(df[[columna]])))*100
+  cat(sprintf("  %-15s: %4d outliers (%5.2f%%)\n", columna, n_outliers, pct_outliers))
+  }
+
+```
+
+
+```{r}
+columnas_categoricas <- names(df)[sapply(df, is.character)]
+columnas_categoricas
+```
+
+
+```{r}
+dlookr::diagnose_category(df%>%select(-c(time,id, updated, place)))
+
+```
+
+```{r}
+
+
+#library(leaflet)
+
+# Crear el mapa interactivo
+mapa_interactivo <- leaflet(data = df) %>%
+  addTiles() %>% # Añade el mapa base (OpenStreetMap)
+  addCircleMarkers(
+    lng = ~longitude,
+    lat = ~latitude,
+    radius = ~mag * 1.5, # El tamaño del círculo será proporcional a la magnitud
+    color = "#e74c3c",   # Color rojo para los sismos
+    stroke = FALSE,
+    fillOpacity = 0.6,
+    # El popup muestra información al hacer clic en el punto
+    popup = ~paste("<b>Magnitud:</b>", mag, "<br>",
+                   "<b>Lugar:</b>", place, "<br>",
+                   "<b>Fecha:</b>", time)
+  )
+
+# Mostrar el mapa
+mapa_interactivo
+
+```
+
+
+```{r}
+numeric_columns
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+#library(GGally)
+
+#ggpairs(df, columns = numeric_columns)
+
+```
+
+# ¿Cómo cambia la actividad sísmica entre regiones?
+
+Para dar respuesta a esta pregunta graficaremos la República Mexicana y se superpondrá una capa de hexágonos, los cuales representarán la frecuencia absoluta (conteos) de sismos registrados en esas zonas, además se agregará la capa de placas tectónicas. 
+
+
+```{r, message=FALSE, warning=FALSE, }
+
+#library(sf)
+#library(maps)
+#library(grid)
+
+# 1. Leer el shapefile de las fronteras tectónicas
+limites_placas <- st_read("./datos_geologicos/tectonicplates-master/PB2002_boundaries.shp", quiet=TRUE)
+
+# Obtener los datos del mapa del mundo
+mundo <- map_data("world")
+
+# 2. Construir el mapa uniendo tus sismos y las fallas tectónicas
+mapa_tectonico <- ggplot() +
+  
+  # Capa 1: Fondo de los países (gris)
+  geom_polygon(data = mundo, aes(x = long, y = lat, group = group),
+               fill = "grey80", color = NA) +
+  
+  # Capa 2: Los sismos (el agrupamiento hexagonal)
+  geom_hex(data = df%>%filter(mag>=5), aes(x = longitude, y = latitude), 
+           binwidth = c(0.7, 0.7),  
+           alpha = 0.75,            
+           color = "white",
+           linewidth = 0.1) +
+  scale_fill_gradient(low = "#FFF59D", high = "#800026", name = "No. de sismos") +
+  
+  # Capa 3: ¡LOS LÍMITES DE PLACAS TECTÓNICAS!
+  # Usamos geom_sf para graficar el shapefile. Le pondremos un color azul brillante y línea punteada
+  geom_sf(data = limites_placas, color = "#00BFFF", linewidth = 0.3, linetype = "dashed") +
+  
+  # Capa 4: Las fronteras políticas encima de todo
+  geom_polygon(data = mundo, aes(x = long, y = lat, group = group),
+               fill = NA, color = "white", linewidth = 0.4) +
+  
+  # IMPORTANTE: Al usar geom_sf, debemos cambiar coord_fixed() por coord_sf()
+  coord_sf(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), expand = FALSE) +
+  
+  # 1. Placa de Norteamérica
+  annotate("text", x = -98, y = 26, label = "Placa de\nNorteamérica", 
+           size = 5, fontface = "bold", color = "gray20") +
+  
+  # 2. Placa del Pacífico
+  annotate("text", x = -114, y = 24, label = "Placa del\nPacífico", 
+           size = 4, fontface = "bold", color = "gray20") +
+  
+  # 3. Placa de Cocos
+  annotate("text", x = -101, y = 15, label = "Placa de\nCocos", 
+           size = 4, fontface = "bold", color = "gray20") +
+  
+  # 4. Placa del Caribe
+  annotate("text", x = -87.5, y = 15, label = "Placa del\nCaribe", 
+           size = 4, fontface = "bold", color = "gray20") +
+  
+  # 5. Placa de Rivera (Texto y flecha corregida)
+  annotate("text", x = -112, y = 19, label = "Placa de\nRivera", 
+           size = 4, fontface = "bold", color = "gray20") +
+  annotate("segment", x = -111, y = 19, xend = -108.5, yend = 20, 
+           arrow = arrow(length = unit(0.2, "cm")), color = "gray20", linewidth = 0.5)+
+  
+  labs(
+    title = "Sismicidad y Límites de Placas Tectónicas en México",
+    subtitle = "Interacción de la Placa de Cocos, Pacífico y Norteamericana",
+    x = "Longitud", 
+    y = "Latitud"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "aliceblue", color = NA),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+# Mostrar el mapa final
+print(mapa_tectonico)
+```
+
+Análisis de Distribución Espacial de Sismicidad (Magnitud $\ge$ 5)
+
+La actividad sísmica en México cambia de manera drástica y desigual a lo largo del territorio. No se distribuye de forma uniforme, sino que concentra su energía casi exclusivamente en los márgenes de las placas tectónicas, creando un contraste muy marcado entre las siguientes zonas:
+
+- Foco principal de actividad (Sur, Sureste y Occidente): La mayor concentración de sismos (indicada por los hexágonos de tonalidad más oscura) se localiza en el Océano Pacífico, frente a las costas de Jalisco, Michoacán, Guerrero, Oaxaca y Chiapas. Este patrón geográfico delimita claramente la zona donde la placa de Cocos y la placa de Rivera se deslizan por debajo de la placa Norteamericana. La alineación de los hexágonos de máxima densidad traza de manera precisa esta frontera de contacto.
+
+- Corredor secundario (Noroeste): El mapa permite visualizar un segundo alineamiento de sismos, de menor frecuencia pero constante, que asciende a lo largo del Golfo de California y la península de Baja California. Esta actividad corresponde al límite donde la placa del Pacífico y la Norteamericana se deslizan lateralmente, el cual queda empíricamente dibujado por la secuencia de eventos sísmicos a lo largo de este sistema de fallas.
+
+- Zonas de baja sismicidad (Centro, Norte y Oriente): En contraste, la ausencia casi total de hexágonos en la mayor parte del centro, norte y oriente del territorio continental y el Golfo de México, confirma que estas regiones, al estar alejadas de los límites tectónicos activos, presentan un riesgo sísmico considerablemente menor para magnitudes superiores a 5.
+
+
+# ¿Existe relación entre profundidad y magnitud?
+
+
+```{r, message=FALSE, warning=FALSE}
+
+#library(corrplot)
+
+df_correlacion <- df%>%select(all_of(numeric_columns))
+
+matriz_cor <- cor(df_correlacion, use = "pairwise.complete.obs", method = "spearman")
+
+corrplot(matriz_cor, 
+         method = "color",       
+         type = "lower",         
+         addCoef.col = "black",  
+         tl.col = "black",       
+         tl.srt = 45,            
+         diag = FALSE,           
+         number.cex = 0.9)
+
+```
+
+```{r}
+cor(df$mag, df$depth, use="complete.obs", method = "spearman")
+```
+
+
+
+```{r}
+
+ggplot(data = df, aes(x=depth, y=mag))+
+  geom_point(color="steelblue", size=2, alpha=0.5)+
+  tema +
+  labs(title = "Depth vs Magnitude",
+       x= "Depth (Km)",
+       y= "Magnitude") +
+  # Agregamos los ticks del eje X cada 50 unidades, desde 0 hasta 300
+  scale_x_continuous(breaks = seq(0, 300, by = 50))
+
+
+```
+
+Análisis de Relación: Profundidad vs. Magnitud (Eventos $\ge$ 5)
+
+A partir del análisis bivariado y el cálculo del coeficiente de correlación de Spearman (-0.08) aplicado estrictamente a la población de sismos con magnitud mayor o igual a 5, se establecen las siguientes conclusiones:
+
+- Independencia Estadística: El coeficiente cercano a cero confirma que no existe una correlación estadística significativa entre la profundidad de un sismo y la magnitud de su energía liberada. Ambas variables se comportan de forma independiente; es decir, un sismo más profundo no equivale necesariamente a uno más fuerte, ni viceversa.
+
+- Alta concentración en sismos leves: La gráfica de dispersión revela una densa aglomeración de eventos en los primeros 50 kilómetros de profundidad. Esta concentración evidencia que la inmensa mayoría de la energía sísmica en México se libera en las capas superficiales, justo en la zona de mayor fricción directa entre las placas tectónicas.
+
+- Límite de los eventos extremos: Visualmente se comprueba que los sismos más devastadores del periodo histórico analizado (aquellos con magnitudes superiores a 7.0) han ocurrido exclusivamente a bajas profundidades (menores a 50 km).
+
+- Comportamiento de la sismicidad profunda: Los eventos que ocurren a profundidades mayores (más de 100 km) son considerablemente menos frecuentes y sus magnitudes operan principalmente con un límite superior a 6.5. Esto indica que, aunque ocurren rupturas internas en la placa que ya se hundió, estas tienden a no generar magnitudes extremas en comparación con los sismos superficiales.
+
+
+# ¿Se pueden identificar regiones con perfiles sísmicos diferentes?
+
+Para la ejecución del modelo K-Means, se estandarizarán  (centrar y escalar) las variables de latitud, longitud, profundidad y magnitud. Dado que el algoritmo utiliza distancias euclidianas, este paso de preprocesamiento es indispensable para asegurar que variables con rangos numéricos amplios (como la profundidad en km) no sesguen la conformación de los clústeres por encima de variables con rangos reducidos (como la magnitud).
+
+
+```{r}
+
+# 1. Seleccionar solo las variables numéricas relevantes
+df_kmeans <- df |> 
+  select(longitude, latitude, depth, mag) |>
+  na.omit() # Asegurar que no haya valores nulos
+
+# 2. Escalar los datos (media 0, desviación estándar 1)
+df_escalado <- scale(df_kmeans)
+```
+
+## Método del Codo
+
+```{r}
+
+# Generar la gráfica del método del codo evaluando hasta 10 posibles clústeres
+grafica_codo <- fviz_nbclust(df_escalado, kmeans, method = "wss", k.max = 10) +
+  labs(
+    title = "Método del Codo para determinar k óptimo",
+    subtitle = "Evaluación de perfiles sísmicos",
+    x = "Número de Clústeres (k)",
+    y = "Suma de Cuadrados Intra-Clúster (WSS)"
+  ) +
+  tema
+
+# Mostrar la gráfica
+print(grafica_codo)
+```
+
+## Score de la silueta
+
+```{r}
+# Generar la gráfica del método de la Silueta
+grafica_silueta <- fviz_nbclust(df_escalado, kmeans, method = "silhouette", k.max = 10) +
+  labs(
+    title = "Método de la Silueta para determinar k óptimo",
+    subtitle = "Evaluación de la cohesión y separación de los perfiles",
+    x = "Número de Clústeres (k)",
+    y = "Anchura promedio de la silueta"
+  ) +
+  tema
+
+# Mostrar la gráfica
+print(grafica_silueta)
+```
+
+Determinación del número óptimo de clústeres ($k$)
+
+Para garantizar la validez de la regionalización sísmica, se determinó el número óptimo de perfiles ($k$) mediante dos métricas de evaluación independientes: la Suma de Cuadrados Intra-Clúster (método del codo) y la Anchura Promedio de la Silueta.
+
+El gráfico del codo mostró un punto de inflexión claro en $k=4$, indicando que añadir clústeres adicionales no reduce significativamente la varianza interna. Para corroborar este hallazgo, se evaluó la métrica de la silueta, la cual alcanzó su pico máximo global ($> 0.44$) exactamente en $k=4$. La convergencia de ambos métodos justifica metodológicamente la partición del territorio y de los eventos sísmicos en cuatro perfiles o regiones distintas.
+
+
+```{r}
+# Configurar una semilla para que los resultados sean reproducibles
+set.seed(123)
+
+# Correr el modelo con k = 4
+modelo_kmeans <- kmeans(df_escalado, centers = 4, nstart = 25)
+
+# Agregar la columna del clúster al dataframe original (filtrado)
+df$cluster <- as.factor(modelo_kmeans$cluster)
+
+# Ver el tamaño de cada clúster
+print(table(df$cluster))
+```
+
+
+```{r}
+
+
+# 3. Graficar los clústeres en el mapa de México
+mapa_clusters <- ggplot() +
+  # Mapa base
+  geom_polygon(data = mundo, aes(x = long, y = lat, group = group),
+               fill = "grey85", color = "white") +
+  # Puntos coloreados por clúster
+  geom_point(data = df, aes(x = longitude, y = latitude, color = cluster),
+             alpha = 0.7, size = 1.5) +
+  # Usamos coord_fixed para mantener la proporción geográfica
+  coord_fixed(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), ratio = 1.3) +
+  # Paleta de colores distintiva
+  scale_color_brewer(palette = "Set1", name = "Perfil Sísmico") +
+  theme_minimal() +
+  labs(
+    title = "Regionalización de Perfiles Sísmicos",
+    subtitle = "Agrupamiento mediante K-Means (k=4)",
+    x = "Longitud", 
+    y = "Latitud"
+  ) +
+  theme(
+    panel.background = element_rect(fill = "aliceblue", color = NA),
+    legend.position = "right"
+  )
+
+# Mostrar el mapa
+print(mapa_clusters)
+```
+
+Mediante la aplicación del algoritmo de agrupamiento K-Means ($k=4$) sobre variables espaciales y físicas estandarizadas, fue posible confirmar de manera analítica que la sismicidad en México no es homogénea, sino que se divide en regiones con perfiles de liberación de energía claramente diferenciados. El modelo identificó de forma autónoma los siguientes cuatro perfiles:
+
+- Perfil 1 (Rojo - Sistema de Fallas del Noroeste): Agrupa casi exclusivamente los eventos del Golfo de California y la Península de Baja California. Este clúster aísla matemáticamente el comportamiento sísmico derivado del movimiento lateral (falla transformante) entre la placa del Pacífico y la Norteamericana, separándolo del resto del país.
+
+- Perfil 4 (Morado - Zona de Subducción Central): Representa el clúster más denso y se concentra a lo largo de las costas de Michoacán, Guerrero y Oaxaca. Corresponde al perfil sísmico "clásico" de la subducción somera de la placa de Cocos, caracterizado por una alta frecuencia de eventos.
+
+- Perfil 3 (Verde - Complejidad Tectónica del Sureste): Delimita una región muy específica en Chiapas y el Istmo de Tehuantepec. El algoritmo separó esta zona del resto de la costa sur, lo cual es congruente con su complejidad geológica, ya que aquí interactúa una tercera placa (la del Caribe) y se registra una zona de subducción con ángulos y profundidades distintas.
+
+- Perfil 2 (Azul - Eventos Atípicos o Extremos): A diferencia de los otros perfiles, este grupo no domina una región geográfica sólida, sino que presenta unos pocos casos aislados a lo largo del Pacífico central. Dado que el modelo incluyó la profundidad y la magnitud, este clúster agrupa aquellos sismos cuyas características físicas (probablemente eventos de gran profundidad intraplaca o magnitudes extremas) se desvían significativamente del comportamiento promedio de su entorno espacial.
+
+
+# ¿Qué patrones se observan alrededor de grandes eventos?
+
+
+```{r}
+library(lubridate)
+#library(ggplot2)
+
+# 1. Convertir la columna de tiempo de texto a formato Fecha-Hora
+df <- df %>%
+  mutate(
+    # Extraemos la fecha y hora ignorando la Z del final
+    fecha_hora = as.POSIXct(substr(time, 1, 19), format="%Y-%m-%dT%H:%M:%S", tz="UTC"),
+    fecha = as.Date(fecha_hora)
+  ) %>%
+  filter(!is.na(fecha))
+
+# 2. Identificar el sismo principal (el de mayor magnitud)
+sismo_principal <- df %>% arrange(desc(mag)) %>% slice(1)
+fecha_evento <- sismo_principal$fecha
+lat_evento <- sismo_principal$latitude
+lon_evento <- sismo_principal$longitude
+
+# 3. Crear el subconjunto de la secuencia sísmica
+# (Radio de +/- 2 grados geográficos y ventana de -30 a +90 días)
+df_secuencia <- df%>%
+  filter(
+    latitude >= lat_evento - 2 & latitude <= lat_evento + 2,
+    longitude >= lon_evento - 2 & longitude <= lon_evento + 2,
+    fecha >= (fecha_evento - 30) & fecha <= (fecha_evento + 90)
+  )
+
+# 4. Generar la visualización temporal
+grafica_secuencia <- ggplot(df_secuencia, aes(x = fecha, y = mag)) +
+  # Línea roja marcando el día del evento principal
+  geom_vline(xintercept = fecha_evento, 
+             color = "red", linetype = "dashed", linewidth = 1) +
+  # Puntos representando las réplicas
+  geom_point(aes(size = mag, color = mag), alpha = 0.7) +
+  geom_segment(aes(x = fecha, xend = fecha, y = 5, yend = mag, color = mag), alpha = 0.4) +
+  scale_color_viridis_c(option = "inferno", direction = -1) +
+  labs(
+    title = paste("Secuencia Temporal del Gran Sismo de Magnitud", sismo_principal$mag),
+    subtitle = "Ventana temporal: 30 días antes y 90 días después del evento principal",
+    x = "Fecha",
+    y = "Magnitud",
+    size = "Magnitud", color = "Magnitud"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# Mostrar gráfica
+print(grafica_secuencia)
+```
+
+
+Análisis de la Secuencia Temporal: Sismo Magnitud 8.2
+
+Para evaluar el comportamiento espacial y temporal alrededor de un evento sísmico extremo, se aisló una ventana de 30 días previos y 90 días posteriores al sismo de mayor magnitud (según este conjunto de datos) en el registro (8.2)
+
+Nota Metodológica sobre Sesgo Instrumental:
+
+Es imperativo señalar que, debido al umbral establecido para este proyecto ($M \ge 5$), la visualización captura exclusivamente las réplicas de impacto significativo. Las redes sismológicas registran miles de microsismos y eventos menores a magnitud 5 que conforman la curva de decaimiento completa tras un terremoto de esta escala. Estos datos fueron excluidos intencionalmente para mantener la congruencia metodológica y enfocar el análisis en la sismicidad de alto riesgo.
+
+Con base en la distribución temporal de los eventos mayores, se identifican los siguientes patrones:
+
+- Baja incidencia aparente de eventos previos: En la ventana de 30 días anteriores a la línea de ruptura principal, se observa una ausencia casi total de sismos de magnitud mayor a 5 en el radio evaluado (con excepción de un único evento aislado). Esto indica que la inmensa energía acumulada no tuvo liberaciones previas de gran escala que sirvieran como advertencia.
+
+- Respuesta inmediata y saturación: Inmediatamente después del evento principal de 8.2, se detona una alta densidad de rupturas secundarias (réplicas). En los primeros días de septiembre, la frecuencia de eventos mayores a 5 es altísima, alcanzando magnitudes máximas que rondan el 6.1.
+
+- Decaimiento temporal prolongado: Conforme avanza el tiempo hacia octubre y noviembre, la frecuencia de los sismos mayores a 5 disminuye drásticamente. Los eventos se vuelven mucho más espaciados en el tiempo. Este decaimiento visible confirma estadísticamente el proceso de reajuste de la corteza terrestre, donde la energía residual tarda meses en disiparse por completo, incluso observando exclusivamente el umbral de las réplicas más severas.
+
+
+
+
+#¿Cómo cambia el número de eventos según el umbral de magnitud seleccionado?
+
+**Análisis de Frecuencia-Magnitud y la Ley de Gutenberg-Richter**
+
+Para dar respuesta a cómo cambia el número de eventos según el umbral de magnitud, es fundamental fundamentar el análisis empírico en la Ley de Gutenberg-Richter. Este principio clásico de la sismología establece un modelo matemático que cuantifica la relación Frecuencia-Magnitud de la actividad tectónica en cualquier región determinada.
+
+Dicha relación demuestra que la frecuencia de los sismos decae de manera exponencial a medida que aumenta su tamaño, y se expresa mediante la siguiente ecuación logarítmica: $$\log_{10} N = a - bM$$
+
+Donde:
+* **$N$** es el número acumulado de sismos con una magnitud mayor o igual a **$M$**.
+* **$a$** representa la tasa total de actividad sísmica de la región (productividad regional).
+* **$b$** describe la proporción entre sismos pequeños y grandes (un parámetro de decaimiento que, a nivel global, suele ser cercano a 1.0).
+
+
+Abordar esta pregunta bajo este marco teórico es de suma importancia analítica. Nos permite trascender la simple observación y comprobar matemáticamente si la sismicidad de alto impacto en México ($M \ge 5$) obedece a este patrón predecible de la física. En términos prácticos, este análisis nos ayudará a demostrar estadísticamente por qué los eventos de magnitud moderada dominan la liberación de energía, mientras que los terremotos catastróficos constituyen anomalías probabilísticas altamente infrecuentes.
+
+
+```{r}
+
+# 1. Crear categorías de magnitud y contar los eventos
+df_frecuencia <- df%>%
+  mutate(
+    categoria_mag = cut(mag, 
+                        breaks = c(4.9, 5.9, 6.9, 7.9, 10), # Cortes de los rangos
+                        labels = c("5.0 - 5.9", "6.0 - 6.9", "7.0 - 7.9", "8.0+"))
+  ) %>%
+  group_by(categoria_mag) %>%
+  summarise(conteo = n()) %>%
+  # Quitar NA's por si algún dato quedó fuera
+  filter(!is.na(categoria_mag))
+
+# 2. Generar el gráfico de barras con el conteo exacto encima
+grafica_frecuencia <- ggplot(df_frecuencia, aes(x = categoria_mag, y = conteo, fill = categoria_mag)) +
+  geom_bar(stat = "identity", color = "black", alpha = 0.8) +
+  # Agregamos el número exacto sobre cada barra
+  geom_text(aes(label = conteo), vjust = -0.5, size = 5, fontface = "bold") +
+  # Paleta de colores cálidos
+  scale_fill_brewer(palette = "YlOrRd") +
+  labs(
+    title = "Frecuencia de Sismos por Rango de Magnitud",
+    subtitle = "Decaimiento exponencial de los eventos mayores a 5",
+    x = "Rango de Magnitud",
+    y = "Número de Eventos (Escala Lineal)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "none" # Ocultar leyenda redundante
+  )
+
+print(grafica_frecuencia)
+```
+
+El análisis de la frecuencia de eventos por rango de magnitud demuestra una disminución drástica y no lineal en el número de sismos conforme aumenta el umbral de energía evaluado. Al clasificar los datos empíricos, se confirma el siguiente comportamiento estadístico:
+
+- Dominancia de eventos moderados: La inmensa mayoría de la actividad sísmica se concentra en el primer escalón del análisis (5.0 a 5.9), acumulando 387 eventos. Esto indica que la corteza libera su tensión predominantemente a través de sismos de esta escala.
+
+- Decaimiento exponencial (Ley de Gutenberg-Richter): Al incrementar el umbral hacia magnitudes superiores, la frecuencia de ocurrencia cae de forma abrupta. Por cada bloque de ~14 sismos de magnitud 5 (387 totales), ocurre aproximadamente un solo sismo en el rango de 6.0 a 6.9 (28 en total), y la proporción sigue colapsando para magnitudes de 7.0 a 7.9 (solo 6 eventos).
+
+- Rareza de eventos extremos: La gráfica aísla un único evento de magnitud 8.0 o superior en el periodo evaluado. Esto evidencia que, a nivel estadístico y geofísico, los sismos de proporciones catastróficas son anomalías altamente infrecuentes que requieren ciclos extensos para acumular la energía necesaria.
+
+En conclusión, el número de eventos está inversamente y exponencialmente relacionado con el umbral de magnitud. Esta distribución asimétrica valida empíricamente la Ley de Gutenberg-Richter para el territorio mexicano, demostrando que a mayor magnitud, la probabilidad de ocurrencia se reduce de manera logarítmica.
+
+#Bibliografía
+
+SSN (2021): Servicio Sismológico Nacional, Instituto de Geofísica, Universidad Nacional Autónoma de
+México, México.
+URL: http://www.ssn.unam.mx
+
+https://github.com/fraxen/tectonicplates/tree/master
+
