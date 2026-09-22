@@ -11,14 +11,15 @@ output: html_document
 ¿Cómo se distribuye espacial y temporalmente la sismicidad de alto impacto (magnitud $\ge$ 5) en México, y es posible identificar perfiles estadísticamente diferenciables de acuerdo a sus comportamiento sísmico mediante técnicas de aprendizaje no supervisado?
 
 2. Preguntas Secundarias
+- 1 ¿Cómo cambia la actividad sísmica entre regiones?
 
-- ¿Existe una correlación estadística significativa entre la profundidad y la magnitud de los sismos?
+- 2 ¿Existe una correlación estadística significativa entre la profundidad y la magnitud de los sismos?
 
-- ¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
+- 3 ¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
 
-- ¿Qué patrones de comportamiento temporal (precursores y réplicas) se observan alrededor de los eventos de magnitud extrema?
+- 4 ¿Qué patrones de comportamiento temporal (precursores y réplicas) se observan alrededor de los eventos de magnitud extrema?
 
-- ¿Cómo cambia la frecuencia probabilística de eventos sísmicos en función del umbral de magnitud seleccionado?
+- 5 ¿Cómo cambia la frecuencia probabilística de eventos sísmicos en función del umbral de magnitud seleccionado?
 
 Hipótesis: La sismicidad de alto riesgo en México presenta una distribución espacial y temporal heterogénea que puede ser agrupada en regiones con perfiles de comportamiento sísmico distinguibles matemáticamente.
 
@@ -32,7 +33,7 @@ Población de Interés: Toda la actividad tectónica y sísmica generada por la 
 
 Unidad de Análisis: Cada evento sísmico individual registrado por la red instrumental.
 
-Periodo: 2010 a la actualidad. (Nota: ajusta este año si el rango de tu descarga del USGS fue diferente).
+Periodo: 2010 a la actualidad.
 
 Alcance Geográfico: Territorio continental de los Estados Unidos Mexicanos y sus franjas tectónicas marítimas adyacentes (Golfo de California, Océano Pacífico y la Trinchera Mesoamericana).
 
@@ -57,6 +58,7 @@ library(leaflet)    # Mapa interactivo
 library(sf)         # simple features
 library(maps)
 library(grid)
+library(patchwork) 
 
 #========================
 library(factoextra)
@@ -275,16 +277,95 @@ print(p_custom)
 
 ```
 
-## Agregar conclusiones y decidir si elegimos alguna estrategia para imputar, aunque las variables con valores perdidos sugiero que no las incluyamos en el análisis
+```{r}
+df <- df %>% select(-nst)
+```
+La variable nst fue eliminada debido a que presenta cerca del 60% de datos faltantes y no será utilizada en los análisis posteriores. Además, esta variable describe el número de estaciones empleadas para localizar el evento, por lo que está más relacionada con la calidad o disponibilidad del registro que con las características físicas del sismo. Por estas razones, su eliminación no afecta las variables centrales del estudio y evita conservar una columna con una alta proporción de valores ausentes.
 
 
 ```{r}
-
 dlookr::diagnose_numeric(df)
+```
+##Análisis univariado de mag y depth (falta interpretación)
+##Magnitud
+```{r}
+# --- Estadísticos ---
+resumen_mag <- dlookr::describe(df, mag) %>%
+  select(mean, sd, p25, p50, p75, skewness, kurtosis)
 
+cat(sprintf(
+  "Magnitud — Media: %.2f | Mediana: %.2f | SD: %.2f | Asimetría: %.2f | Curtosis: %.2f\n",
+  resumen_mag$mean, resumen_mag$p50, resumen_mag$sd,
+  resumen_mag$skewness, resumen_mag$kurtosis
+))
 
+# --- Boxplot delgado (arriba) ---
+p_box_mag <- ggplot(df, aes(x = mag, y = "")) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7, outlier.color = "firebrick", width = 0.6) +
+  labs(x = NULL, y = NULL) +
+  theme_void()
+
+# --- Histograma + densidad (abajo) ---
+p_hist_mag <- ggplot(df, aes(x = mag)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                  fill = "steelblue", color = "white", alpha = 0.85) +
+  geom_density(color = "firebrick", linewidth = 1) +
+  geom_vline(xintercept = resumen_mag$mean, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = resumen_mag$p50, linetype = "dotted", color = "darkgreen") +
+  labs(title = "Distribución de la Magnitud",
+       subtitle = "Línea negra = media | Línea verde = mediana | Curva roja = densidad",
+       x = "Magnitud", y = "Densidad") +
+  tema
+
+# --- Combinar en una sola figura compacta ---
+p_box_mag / p_hist_mag + plot_layout(heights = c(1, 5))
 ```
 
+##Profundidad
+```{r}
+# --- Clasificación sismológica estándar (no agrega gráfica extra, solo color) ---
+df <- df %>%
+  mutate(categoria_profundidad = case_when(
+    depth < 70               ~ "Superficial (<70 km)",
+    depth >= 70 & depth < 300 ~ "Intermedia (70-300 km)",
+    depth >= 300              ~ "Profunda (>=300 km)",
+    TRUE ~ NA_character_
+  ),
+  categoria_profundidad = factor(categoria_profundidad,
+    levels = c("Superficial (<70 km)", "Intermedia (70-300 km)", "Profunda (>=300 km)")))
+
+# --- Estadísticos ---
+resumen_depth <- dlookr::describe(df, depth) %>%
+  select(mean, sd, p25, p50, p75, skewness, kurtosis)
+
+pct_superficial <- round(100 * mean(df$categoria_profundidad == "Superficial (<70 km)", na.rm = TRUE), 1)
+
+cat(sprintf(
+  "Profundidad — Media: %.1f km | Mediana: %.1f km | SD: %.1f | Asimetría: %.2f | %% Superficial: %.1f%%\n",
+  resumen_depth$mean, resumen_depth$p50, resumen_depth$sd,
+  resumen_depth$skewness, pct_superficial
+))
+
+# --- Boxplot delgado (arriba) ---
+p_box_depth <- ggplot(df, aes(x = depth, y = "")) +
+  geom_boxplot(fill = "#FD8D3C", alpha = 0.7, outlier.color = "firebrick", width = 0.6) +
+  labs(x = NULL, y = NULL) +
+  theme_void()
+
+# --- Histograma coloreado por categoría sismológica (abajo) ---
+p_hist_depth <- ggplot(df %>% filter(!is.na(categoria_profundidad)),
+                        aes(x = depth, fill = categoria_profundidad)) +
+  geom_histogram(bins = 30, color = "white", alpha = 0.85) +
+  geom_vline(xintercept = resumen_depth$mean, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("#FDBE85", "#FD8D3C", "#D94701"), name = "Categoría") +
+  labs(title = "Distribución de la Profundidad",
+       subtitle = "Línea negra = media | Color = categoría sismológica estándar",
+       x = "Profundidad (km)", y = "Número de eventos") +
+  tema
+
+# --- Combinar en una sola figura compacta ---
+p_box_depth / p_hist_depth + plot_layout(heights = c(1, 5))
+```
 ## Outliers utilizando el criterio del IQR
 
 ```{r}
@@ -359,7 +440,7 @@ numeric_columns
 
 ```
 
-# ¿Cómo cambia la actividad sísmica entre regiones?
+# 1 ¿Cómo cambia la actividad sísmica entre regiones?
 
 Para dar respuesta a esta pregunta graficaremos la República Mexicana y se superpondrá una capa de hexágonos, los cuales representarán la frecuencia absoluta (conteos) de sismos registrados en esas zonas, además se agregará la capa de placas tectónicas. 
 
@@ -451,7 +532,7 @@ La actividad sísmica en México cambia de manera drástica y desigual a lo larg
 - Zonas de baja sismicidad (Centro, Norte y Oriente): En contraste, la ausencia casi total de hexágonos en la mayor parte del centro, norte y oriente del territorio continental y el Golfo de México, confirma que estas regiones, al estar alejadas de los límites tectónicos activos, presentan un riesgo sísmico considerablemente menor para magnitudes superiores a 5.
 
 
-# ¿Existe relación entre profundidad y magnitud?
+# 2 ¿Existe relación entre profundidad y magnitud?
 
 
 ```{r, message=FALSE, warning=FALSE}
@@ -506,7 +587,7 @@ A partir del análisis bivariado y el cálculo del coeficiente de correlación d
 - Comportamiento de la sismicidad profunda: Los eventos que ocurren a profundidades mayores (más de 100 km) son considerablemente menos frecuentes y sus magnitudes operan principalmente con un límite superior a 6.5. Esto indica que, aunque ocurren rupturas internas en la placa que ya se hundió, estas tienden a no generar magnitudes extremas en comparación con los sismos superficiales.
 
 
-# ¿Se pueden identificar regiones con perfiles sísmicos diferentes?
+# 3 ¿Se pueden identificar regiones con perfiles sísmicos diferentes?
 
 Para la ejecución del modelo K-Means, se estandarizarán  (centrar y escalar) las variables de latitud, longitud, profundidad y magnitud. Dado que el algoritmo utiliza distancias euclidianas, este paso de preprocesamiento es indispensable para asegurar que variables con rangos numéricos amplios (como la profundidad en km) no sesguen la conformación de los clústeres por encima de variables con rangos reducidos (como la magnitud).
 
@@ -563,6 +644,7 @@ Para garantizar la validez de la regionalización sísmica, se determinó el nú
 
 El gráfico del codo mostró un punto de inflexión claro en $k=4$, indicando que añadir clústeres adicionales no reduce significativamente la varianza interna. Para corroborar este hallazgo, se evaluó la métrica de la silueta, la cual alcanzó su pico máximo global ($> 0.44$) exactamente en $k=4$. La convergencia de ambos métodos justifica metodológicamente la partición del territorio y de los eventos sísmicos en cuatro perfiles o regiones distintas.
 
+##opción alternativa (DBSCAN) *creo hay que agregarla para hacer una comparación, lo pide en la rúbrica*
 
 ```{r}
 # Configurar una semilla para que los resultados sean reproducibles
@@ -612,13 +694,13 @@ print(mapa_clusters)
 
 Mediante la aplicación del algoritmo de agrupamiento K-Means ($k=4$) sobre variables espaciales y físicas estandarizadas, fue posible confirmar de manera analítica que la sismicidad en México no es homogénea, sino que se divide en regiones con perfiles de liberación de energía claramente diferenciados. El modelo identificó de forma autónoma los siguientes cuatro perfiles:
 
-- Perfil 1 (Rojo - Sistema de Fallas del Noroeste): Agrupa casi exclusivamente los eventos del Golfo de California y la Península de Baja California. Este clúster aísla matemáticamente el comportamiento sísmico derivado del movimiento lateral (falla transformante) entre la placa del Pacífico y la Norteamericana, separándolo del resto del país.
+- Perfil 2 (Azúl - Sistema de Fallas del Noroeste): Agrupa casi exclusivamente los eventos del Golfo de California y la Península de Baja California. Este clúster aísla matemáticamente el comportamiento sísmico derivado del movimiento lateral (falla transformante) entre la placa del Pacífico y la Norteamericana, separándolo del resto del país.
 
 - Perfil 4 (Morado - Zona de Subducción Central): Representa el clúster más denso y se concentra a lo largo de las costas de Michoacán, Guerrero y Oaxaca. Corresponde al perfil sísmico "clásico" de la subducción somera de la placa de Cocos, caracterizado por una alta frecuencia de eventos.
 
 - Perfil 3 (Verde - Complejidad Tectónica del Sureste): Delimita una región muy específica en Chiapas y el Istmo de Tehuantepec. El algoritmo separó esta zona del resto de la costa sur, lo cual es congruente con su complejidad geológica, ya que aquí interactúa una tercera placa (la del Caribe) y se registra una zona de subducción con ángulos y profundidades distintas.
 
-- Perfil 2 (Azul - Eventos Atípicos o Extremos): A diferencia de los otros perfiles, este grupo no domina una región geográfica sólida, sino que presenta unos pocos casos aislados a lo largo del Pacífico central. Dado que el modelo incluyó la profundidad y la magnitud, este clúster agrupa aquellos sismos cuyas características físicas (probablemente eventos de gran profundidad intraplaca o magnitudes extremas) se desvían significativamente del comportamiento promedio de su entorno espacial.
+- Perfil 1 (Rojo - Eventos Atípicos o Extremos): A diferencia de los otros perfiles, este grupo no domina una región geográfica sólida, sino que presenta unos pocos casos aislados a lo largo del Pacífico central. Dado que el modelo incluyó la profundidad y la magnitud, este clúster agrupa aquellos sismos cuyas características físicas (probablemente eventos de gran profundidad intraplaca o magnitudes extremas) se desvían significativamente del comportamiento promedio de su entorno espacial.
 
 
 # ¿Qué patrones se observan alrededor de grandes eventos?
@@ -759,8 +841,13 @@ El análisis de la frecuencia de eventos por rango de magnitud demuestra una dis
 En conclusión, el número de eventos está inversamente y exponencialmente relacionado con el umbral de magnitud. Esta distribución asimétrica valida empíricamente la Ley de Gutenberg-Richter para el territorio mexicano, demostrando que a mayor magnitud, la probabilidad de ocurrencia se reduce de manera logarítmica.
 
 #Bibliografía
+-sgm.gob.mx: Evolución de la tectónica en México
+URL: https://www.sgm.gob.mx/Web/MuseoVirtual/Riesgos-geologicos/Evolucion-tectonica-Mexico.html
 
-SSN (2021): Servicio Sismológico Nacional, Instituto de Geofísica, Universidad Nacional Autónoma de
+-terremoto de 2017 quebró placa tectónica en dos: nationalgeogra.
+URL: https://www.nationalgeographicla.com/medio-ambiente/2018/10/mexico-terremoto-de-2017-quebro-placa-tectonica-en-dos
+
+-SSN (2021): Servicio Sismológico Nacional, Instituto de Geofísica, Universidad Nacional Autónoma de
 México, México.
 URL: http://www.ssn.unam.mx
 
