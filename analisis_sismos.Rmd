@@ -12,12 +12,14 @@ output: html_document
 
 ¿Cómo se distribuye espacial y temporalmente la sismicidad de alto impacto (magnitud $\ge$ 5) en México, y es posible identificar perfiles estadísticamente diferenciables de acuerdo a sus comportamiento sísmico mediante técnicas de aprendizaje no supervisado?
 
+
 ## Preguntas Secundarias
 
 - ¿Existe una correlación estadística significativa entre la profundidad y la magnitud de los sismos?
 - ¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
 - ¿Qué patrones de comportamiento temporal (precursores y réplicas) se observan alrededor de los eventos de magnitud extrema?
 - ¿Cómo cambia la frecuencia probabilística de eventos sísmicos en función del umbral de magnitud seleccionado?
+
 
 **Hipótesis:** La sismicidad de alto riesgo en México presenta una distribución espacial y temporal heterogénea que puede ser agrupada en regiones con perfiles de comportamiento sísmico distinguibles matemáticamente.
 
@@ -54,6 +56,7 @@ library(randtests)   # prueba de rachas
 library(spdep)       # Índice de Moran
 library(scales)      # Necesario para trans_breaks(transformación logarítmica)
 library(geosphere)   # distHaversine
+library(patchwork) 
 
 tema <- theme_minimal() +
   theme(
@@ -220,7 +223,9 @@ print(p_custom)
 
 ## 2.1 Resumen Numérico y Distribuciones
 
+
 ```{r}
+
 numeric_columns <- names(df)[sapply(df, is.numeric)]
 vars_objetivo <- intersect(c("mag", "depth", "latitude", "longitude"), numeric_columns)
 
@@ -264,35 +269,44 @@ depth_skew <- round(resumen_numerico$skewness[resumen_numerico$described_variabl
 ### Distribución de la Magnitud
 
 ```{r}
-cat(sprintf("Media: %.2f | Mediana: %.2f | Desv. Est.: %.2f | Rango: %.1f - %.1f\n",
-            mean(df$mag, na.rm = TRUE), median(df$mag, na.rm = TRUE),
-            sd(df$mag, na.rm = TRUE), min(df$mag, na.rm = TRUE), max(df$mag, na.rm = TRUE)))
 
-moda_mag <- df %>% mutate(mag_red = round(mag, 1)) %>%
-  count(mag_red, sort = TRUE) %>% slice(1)
-cat(sprintf("Magnitud más frecuente (moda aprox.): %.1f (%d eventos)\n", moda_mag$mag_red, moda_mag$n))
+# --- Estadísticos ---
+resumen_mag <- dlookr::describe(df, mag) %>%
+  select(mean, sd, p25, p50, p75, skewness, kurtosis)
+
+cat(sprintf(
+  "Magnitud — Media: %.2f | Mediana: %.2f | SD: %.2f | Asimetría: %.2f | Curtosis: %.2f\n",
+  resumen_mag$mean, resumen_mag$p50, resumen_mag$sd,
+  resumen_mag$skewness, resumen_mag$kurtosis
+))
 
 ```
 
+
 ```{r}
-ggplot(df, aes(x = mag)) +
-  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "steelblue", color = "white", alpha = 0.8) +
+
+# --- Boxplot delgado (parte superior) ---
+p_box_mag <- ggplot(df, aes(x = mag, y = "")) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7, outlier.color = "firebrick", width = 0.6) +
+  labs(x = NULL, y = NULL) +
+  theme_void()
+
+# --- Histograma + densidad (parte inferior) ---
+p_hist_mag <- ggplot(df, aes(x = mag)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                  fill = "steelblue", color = "white", alpha = 0.85) +
   geom_density(color = "firebrick", linewidth = 1) +
-  geom_vline(xintercept = mean(df$mag, na.rm = TRUE), linetype = "dashed", color = "black") +
-  labs(title = "Distribución de la Magnitud", x = "Magnitud", y = "Densidad") +
+  geom_vline(xintercept = resumen_mag$mean, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = resumen_mag$p50, linetype = "dotted", color = "darkgreen") +
+  labs(title = "Distribución de la Magnitud",
+       subtitle = "Línea negra = media | Línea verde = mediana | Curva roja = densidad",
+       x = "Magnitud", y = "Densidad") +
   tema
 
+# --- Combinar en una sola figura compacta ---
+p_box_mag / p_hist_mag + plot_layout(heights = c(1, 5))
+
 ```
-
-```{r}
-ggplot(df, aes(x = "", y = mag)) +
-  geom_boxplot(fill = "steelblue", alpha = 0.7, outlier.color = "firebrick") +
-  coord_flip() +
-  labs(title = "Boxplot de Magnitud", x = NULL, y = "Magnitud") +
-  tema
-```
-
-
 
 ```{r}
 tabla_freq_mag <- df %>%
@@ -333,11 +347,43 @@ kable(tabla_profundidad)
 
 ```
 
+
 ```{r}
-ggplot(df %>% filter(!is.na(categoria_profundidad)), aes(x = depth, fill = categoria_profundidad)) +
+# --- Estadísticos ---
+resumen_depth <- dlookr::describe(df, depth) %>%
+  select(mean, sd, p25, p50, p75, skewness, kurtosis)
+
+pct_superficial <- round(100 * mean(df$categoria_profundidad == "Superficial (<70 km)", na.rm = TRUE), 1)
+
+cat(sprintf(
+  "Profundidad — Media: %.1f km | Mediana: %.1f km | SD: %.1f | Asimetría: %.2f | %% Superficial: %.1f%%\n",
+  resumen_depth$mean, resumen_depth$p50, resumen_depth$sd,
+  resumen_depth$skewness, pct_superficial
+))
+
+```
+
+```{r}
+
+# --- Boxplot delgado (gráfica superior) ---
+p_box_depth <- ggplot(df, aes(x = depth, y = "")) +
+  geom_boxplot(fill = "#FD8D3C", alpha = 0.7, outlier.color = "firebrick", width = 0.6) +
+  labs(x = NULL, y = NULL) +
+  theme_void()
+
+# --- Histograma coloreado por categoría sismológica (gráfica inferior) ---
+p_hist_depth <- ggplot(df %>% filter(!is.na(categoria_profundidad)),
+                        aes(x = depth, fill = categoria_profundidad)) +
   geom_histogram(bins = 30, color = "white", alpha = 0.85) +
+  geom_vline(xintercept = resumen_depth$mean, linetype = "dashed", color = "black") +
   scale_fill_manual(values = c("#FDBE85", "#FD8D3C", "#D94701"), name = "Categoría") +
-  labs(title = "Distribución de la Profundidad", x = "Profundidad (km)", y = "Número de eventos") + tema
+  labs(title = "Distribución de la Profundidad",
+       subtitle = "Línea negra = media | Color = categoría sismológica estándar",
+       x = "Profundidad (km)", y = "Número de eventos") +
+  tema
+
+# --- Combinar en una sola figura compacta ---
+p_box_depth / p_hist_depth + plot_layout(heights = c(1, 5))
 
 ```
 
@@ -576,15 +622,25 @@ ggplot(df_frecuencia, aes(x = categoria_mag, y = conteo, fill = categoria_mag)) 
 ```
 
 ```{r}
-gr_data <- df %>% filter(!is.na(mag)) %>% group_by(mag) %>% summarise(n = n(), .groups = "drop") %>% arrange(desc(mag)) %>% mutate(N_acum = cumsum(n))
+gr_data <- df %>% filter(!is.na(mag)) %>% 
+	group_by(mag) %>% 
+	summarise(n = n(), .groups = "drop") %>% 
+	arrange(desc(mag)) %>% 
+	mutate(N_acum = cumsum(n))
 
 gr_fit <- lm(log10(N_acum) ~ mag, data = gr_data)
 b_value <- -coef(gr_fit)[2]
 a_value <-  coef(gr_fit)[1]
 
 ggplot(gr_data, aes(x = mag, y = N_acum)) +
-  geom_point(color = "darkred", size = 2) + geom_smooth(method = "lm", color = "blue", se = TRUE, alpha = 0.2) +
-  scale_y_log10() + labs(title = "Ley de Gutenberg-Richter", subtitle = sprintf("log10(N) = %.2f - %.2f·M", a_value, b_value), x = "Magnitud", y = "N") + tema
+  geom_point(color = "darkred", size = 2) + 
+  geom_smooth(method = "lm", color = "blue", se = TRUE, alpha = 0.2) +
+  scale_y_log10() + 
+  labs(title = "Ley de Gutenberg-Richter", 
+       subtitle = sprintf("log10(N) = %.2f - %.2f·M", a_value, b_value), 
+       x = "Magnitud", 
+       y = "N") + 
+  tema
 
 ```
 
@@ -601,6 +657,7 @@ r2_gr <- round(summary(gr_fit)$r.squared, 3)
 Los grandes sismos no son eventos aislados, sino que alteran el estado de estrés de la corteza desatando réplicas y enjambres sísmicos.
 
 ```{r, message=FALSE, warning=FALSE}
+
 df_mensual <- df %>% 
   mutate(mes_anio = floor_date(fecha_hora, "month")) %>% 
   count(mes_anio) %>%
@@ -617,9 +674,7 @@ ggplot(df_mensual, aes(x = mes_anio)) +
        x = "Fecha", y = "Eventos por mes") +
   tema
 
-
 ```
-
 
 ```{r}
 if (requireNamespace("Kendall", quietly = TRUE)) {
@@ -634,7 +689,10 @@ if (requireNamespace("Kendall", quietly = TRUE)) {
 
 
 ```{r}
-df <- df %>% arrange(fecha_hora) %>% mutate(tiempo_entre_sismos_hrs = as.numeric(difftime(fecha_hora, lag(fecha_hora), units = "hours")))
+
+df <- df %>% 
+	arrange(fecha_hora) %>% 
+	mutate(tiempo_entre_sismos_hrs = as.numeric(difftime(fecha_hora, lag(fecha_hora), units = "hours")))
 
 ggplot(df %>% filter(!is.na(tiempo_entre_sismos_hrs), tiempo_entre_sismos_hrs > 0), aes(x = tiempo_entre_sismos_hrs)) +
   geom_histogram(bins = 60, fill = "purple", alpha = 0.7, color = "white") +
@@ -663,15 +721,24 @@ Evento de septiembre 2017:
 
 ```{r}
 sismo_principal <- df %>% slice_max(mag, n = 1)
-df <- df %>% mutate(dist_al_evento_principal_km = distHaversine(cbind(longitude, latitude), c(sismo_principal$longitude, sismo_principal$latitude)) / 1000, dias_desde_evento_principal = as.numeric(difftime(fecha_hora, sismo_principal$fecha_hora, units = "days")))
+df <- df %>% 
+	mutate(dist_al_evento_principal_km = distHaversine(cbind(longitude, latitude), 
+							   c(sismo_principal$longitude, sismo_principal$latitude)) / 1000, 
+	       dias_desde_evento_principal = as.numeric(difftime(fecha_hora, sismo_principal$fecha_hora, units = "days")))
 
-replicas <- df %>% filter(dist_al_evento_principal_km <= 200, dias_desde_evento_principal > -30, dias_desde_evento_principal <= 90) %>% arrange(fecha_hora)
+replicas <- df %>% 
+	filter(dist_al_evento_principal_km <= 200, 
+	       dias_desde_evento_principal > -30, 
+	       dias_desde_evento_principal <= 90) %>% 
+	arrange(fecha_hora)
 
 ggplot(replicas, aes(x = fecha, y = mag)) +
     geom_vline(xintercept = sismo_principal$fecha, color = "red", linetype = "dashed", linewidth = 1) +
     geom_point(aes(size = mag, color = mag), alpha = 0.7) +
     geom_segment(aes(x = fecha, xend = fecha, y = 5, yend = mag, color = mag), alpha = 0.4) +
-  scale_color_viridis_c(option = "inferno", direction = -1) + labs(title = "Secuencia del Gran Sismo", x = "Fecha", y = "Magnitud") + tema
+  scale_color_viridis_c(option = "inferno", direction = -1) + 
+  labs(title = "Secuencia del Gran Sismo", x = "Fecha", y = "Magnitud") + 
+  tema
 
 ```
 
@@ -680,6 +747,7 @@ ggplot(replicas, aes(x = fecha, y = mag)) +
 Nota Metodológica sobre Sesgo Instrumental:
 
 Es imperativo señalar que, debido al umbral establecido para este proyecto ($M \ge 5$), la visualización captura exclusivamente las réplicas de impacto significativo. Las redes sismológicas registran miles de microsismos y eventos menores a magnitud 5 que conforman la curva de decaimiento completa tras un terremoto de esta escala. Estos datos fueron excluidos intencionalmente para mantener la congruencia metodológica y enfocar el análisis en la sismicidad de alto riesgo.
+
 Los umbrales de 200 km y 90 días son una definición operativa razonable, no un estándar sismológico único — con otro criterio el conteo de "réplicas" cambiaría.
 
 * **Baja incidencia aparente de eventos previos:** En la ventana de 30 días anteriores a la línea de ruptura, se observa ausencia casi total de sismos de magnitud mayor a 5.
@@ -687,8 +755,13 @@ Los umbrales de 200 km y 90 días son una definición operativa razonable, no un
 * **Decaimiento temporal prolongado:** Conforme avanza el tiempo, la frecuencia disminuye drásticamente, confirmando el proceso de reajuste de la corteza.
 
 ```{r}
+
 if (nrow(replicas) > 5) {
-  ggplot(replicas%>%filter(dias_desde_evento_principal>0), aes(x = dias_desde_evento_principal)) + geom_histogram(bins = 30, fill = "darkred", alpha = 0.7, color = "white") + labs(title = "Decaimiento temporal de réplicas") + tema
+  ggplot(replicas%>%
+	 filter(dias_desde_evento_principal>0), aes(x = dias_desde_evento_principal)) + 
+  geom_histogram(bins = 30, fill = "darkred", alpha = 0.7, color = "white") + 
+  labs(title = "Decaimiento temporal de réplicas") + 
+  tema
 }
 
 ```
@@ -762,6 +835,7 @@ ggplot(data.frame(teorico = q_teoricos, observado = sort(d2_mahalanobis)),
        x = expression(paste("Cuantiles teóricos  ", chi[4]^2)),
        y = expression(paste("D"^2, " de Mahalanobis observado"))) +
   tema
+
 ```
 
 > Nota: al igual que con los outliers univariados de `mag`, estos casos no se eliminan automáticamente — es muy posible que sean justo los eventos "atípicos" (p. ej. sismos profundos e intraplaca) que K-Means debe capturar como su propio perfil.
@@ -1098,6 +1172,7 @@ ggplot(perfil_largo, aes(x = metrica, y = valor,
        x = NULL, y = "Valor",
        color = "Región") +
   tema
+
 ```
 
 
@@ -1163,6 +1238,7 @@ print(grafica_silueta)
 **Determinación del número óptimo de clústeres ($k$):**
 El gráfico del codo mostró un punto de inflexión en $k=4$. La métrica de la silueta alcanzó su pico máximo global ($> 0.44$) exactamente en $k=4$. Esto justifica metodológicamente la partición del territorio en cuatro perfiles.
 
+##opción alternativa (DBSCAN) *creo hay que agregarla para hacer una comparación, lo pide en la rúbrica*
 
 ```{r}
 set.seed(123)
@@ -1218,6 +1294,7 @@ print(mapa_clusters)
 * **Zona de Subducción Principal (Clúster 4 - Morado):** Mapea la frontera convergente (Trinchera Mesoamericana) donde la Placa de Cocos se hunde.
 * **Sismicidad Interior o Profunda (Clúster 1 - Rojo):** Se concentra tierra adentro en el Istmo de Tehuantepec, sugiriendo rupturas de mayor profundidad cuando la placa ya ha descendido.
 * **Eventos Anómalos (Clúster 2 - Azul):** Disperso sobre las fronteras, agrupando los sismos más raros y destructivos por su perfil físico extremo en lugar de su geografía.
+
 
 ## 4.4 Evaluación de Clústeres
 
@@ -1364,6 +1441,9 @@ Servicio Sismológico Nacional (SSN). (2021). *Catálogo de sismos*. Instituto d
 USGS (U.S. Geological Survey). (2026). *Earthquake Catalog API*. Earthquake Hazards Program. Obtenido de https://earthquake.usgs.gov/fdsnws/event/1/
 
 
+Servicio Sismológico Nacional (SSN) *Evolución de la tectónica en México* URL: https://www.sgm.gob.mx/Web/MuseoVirtual/Riesgos-geologicos/Evolucion-tectonica-Mexico.html
 
+Terremoto de 2017 quebró placa tectónica en dos: nationalgeogra.
+URL: https://www.nationalgeographicla.com/medio-ambiente/2018/10/mexico-terremoto-de-2017-quebro-placa-tectonica-en-dos
 
 
