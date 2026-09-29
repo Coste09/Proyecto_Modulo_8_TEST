@@ -3,7 +3,7 @@ title: "Análisis de Sismicidad en México"
 output: 
   flexdashboard::flex_dashboard:
     orientation: rows
-    vertical_layout: scroll
+    vertical_layout: fill
     theme: flatly
 ---
 
@@ -288,6 +288,7 @@ Regionalización (K-Means) {data-icon="fa-map-marker-alt"}
 ### Pregunta de Investigación Secundaria
 
 ¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
+
 ```{r}
 
 # Preparación del modelo K-Means
@@ -300,14 +301,22 @@ df$cluster <- as.factor(modelo_kmeans$cluster)
 ```
 
 
-## Column {data-width=600}
+## Row {data-width=900}
 
-### Agrupamiento Tectónico Identificado (k=4)
+### Agrupamiento Tectónico Identificado (k=4) {data-width=600}
 
 ```{r}
 
 # Crear una paleta categórica para los 4 clústeres
 paleta_cluster <- colorFactor(palette = "Set1", domain = df$cluster)
+
+# 1. Crear el dataframe con las coordenadas de los nombres de las placas
+etiquetas_placas <- data.frame(
+  lng = c(-98, -114, -101, -86.5, -108),
+  lat = c(26, 24, 15, 14.5, 20),
+  texto = c("Placa de Norteamérica", "Placa del Pacífico", "Placa de Cocos",
+            "Placa del Caribe", "Placa de Rivera")
+  )
 
 mapa_clusters_leaflet <- leaflet(data = df) %>%
   addProviderTiles(providers$Esri.WorldTopoMap) %>%
@@ -333,6 +342,21 @@ mapa_clusters_leaflet <- leaflet(data = df) %>%
     dashArray = "5, 5",
     popup = "Límite de Placa Tectónica"
   ) %>%
+  addLabelOnlyMarkers(
+    data = etiquetas_placas,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~lapply(texto, htmltools::HTML),
+    labelOptions = labelOptions(
+    noHide = TRUE,
+    direction = "center",
+    textOnly = TRUE,
+    style = list(
+    "color" = "#333333",
+    "font-weight" = "bold",
+    "font-size" = "12px",
+    "text-shadow" = "1px 1px 2px white, -1px -1px 2px white")
+    )) %>%
   addLegend("bottomright", pal = paleta_cluster, values = ~cluster,
             title = "Perfil Sísmico", opacity = 1)
 
@@ -340,9 +364,7 @@ mapa_clusters_leaflet
 ```
 
 
-## Column {data-width=400}
-
-### Distribución de la Profundidad por Clúster
+### Distribución de la Profundidad y Magnitud por Clúster {data-width=400}
 
 ```{r}
 
@@ -353,14 +375,7 @@ p_prof_cluster <- ggplot(df, aes(x = cluster, y = depth, fill = cluster)) +
   labs(x = "Clúster (Perfil)", y = "Profundidad (km)") +
   tema + theme(legend.position = "none")
 
-ggplotly(p_prof_cluster)
-
-```
-
-
-### Distribución de la Magnitud por Clúster
-
-```{r}
+fig1<-ggplotly(p_prof_cluster)
 
 p_mag_cluster <- ggplot(df, aes(x = cluster, y = mag, fill = cluster)) +
   scale_fill_brewer(palette = "Set1")+
@@ -371,14 +386,19 @@ p_mag_cluster <- ggplot(df, aes(x = cluster, y = mag, fill = cluster)) +
     y = "Magnitud"
   ) +
   tema + theme(legend.position = "none")
-fig <- ggplotly(p_mag_cluster)
+
+fig_mag <- ggplotly(p_mag_cluster)
 
 # Identifica qué trazas son boxplot y ajusta su ancho
-p_mag_cluster2 <- style(fig, width = 0.15, traces = which(sapply(fig$x$data, function(t) t$type) == "box"))
+fig2 <- style(fig_mag, width = 0.15, traces = which(sapply(fig_mag$x$data, function(t) t$type) == "box"))
 
-p_mag_cluster2
+# 3. Unir ambas gráficas verticalmente en un solo objeto interactivo
+subplot(fig1, fig2, nrows = 2, titleX = TRUE, titleY = TRUE, margin = 0.08) %>%
+  layout(showlegend = FALSE)
+
 
 ```
+
 
 
 Frecuencia-Magnitud (Gutenberg-Richter) {data-icon="fa-chart-area"}
