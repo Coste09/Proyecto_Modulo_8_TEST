@@ -3,7 +3,20 @@
 title: "Análisis Sismos"
 author: "Equipo 7"
 date: "2026-09-14"
-output: html_document
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    code_download: true
+    df_print: paged
+    fig_caption: true
 ---
 
 # Introducción y Diseño del Estudio
@@ -1429,6 +1442,10 @@ kable(resumen_final, caption = "Resumen ejecutivo del análisis descriptivo")
 ```
 
 **Interpretación de Cierre:** Esta tabla reúne la evidencia que responde a las preguntas secundarias del proyecto (correlación profundidad-magnitud, regiones diferenciadas, patrones temporales, y la ley frecuencia-magnitud), y los diagnósticos que justificaron metodológicamente el modelado espacial. El estadístico de Hopkins comprobó la estructura de agrupamiento real, y el análisis K-Means logró segmentar con éxito el catálogo en regímenes tectónicos estadísticamente fundamentados.
+
+## Limitaciones, Posibles Extensiones y Conclusión General
+
+Entre las principales limitaciones del proyecto destacan que el análisis se restringe a sismos $M \ge 5$ (sin generalizarse a la microsismicidad), que el bounding box es una conveniencia geográfica y no una frontera tectónica real, que no puede descartarse un sesgo instrumental en la tendencia temporal observada, que la secuencia de réplicas se basa en un único evento principal (n=1), que K-Means asume clústeres de forma esférica pese a que la sismicidad sigue la geometría lineal de las fallas, que no se comparó contra un método alternativo como DBSCAN o jerárquico, y que aún falta publicar la visualización final en una URL accesible; como posibles extensiones se sugiere comparar K-Means con métodos no esféricos, repetir el análisis de réplicas sobre varios eventos M≥7 en vez de uno solo, ajustar un modelo de series de tiempo para pronosticar frecuencia futura, incorporar variables de calidad de detección del catálogo (`gap`, `nst`, `rms`), cruzar los perfiles sísmicos con datos de densidad poblacional para pasar de actividad a riesgo, y finalmente publicar el dashboard interactivo; y en conclusión general, la evidencia acumulada —el Estadístico de Hopkins (`r round(hopkins_res$hopkins_stat, 3)`) confirmando estructura real de agrupamiento, el Índice de Moran mostrando autocorrelación fuerte en profundidad (0.707) pero casi nula en magnitud (0.079), los cuatro perfiles de K-Means validados estadísticamente con Kruskal-Wallis y post-hoc, la independencia entre profundidad y magnitud (Pearson ≈ 0.01), y el ajuste de Gutenberg-Richter ($b$ = `r b_value_r`, $R^2$ = `r r2_gr`)— confirma que la sismicidad de alto impacto en México sí se distribuye de forma heterogénea y agrupable en perfiles distinguibles matemáticamente, aunque el alcance de esta conclusión queda acotado por las limitaciones señaladas, en particular la ausencia todavía de una comparación de modelos alternativos y de una visualización publicada por URL.
 
 # Bibliografía
 
