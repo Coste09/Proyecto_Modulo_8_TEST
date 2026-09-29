@@ -1,0 +1,550 @@
+---
+title: "Análisis de Sismicidad en México"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+
+# ==========================================
+# 1. CARGA DE LIBRERÍAS Y DATOS BASE
+# ==========================================
+library(flexdashboard)
+library(plotly)      # Para interactividad en gráficas
+library(leaflet)
+library(tidyverse)
+library(dlookr)
+library(lubridate)
+library(knitr)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(factoextra)
+library(randtests)
+library(spdep)
+library(scales)
+library(geosphere)
+library(patchwork)
+library(Kendall)
+
+tema <- theme_minimal() +
+  theme(
+    plot.title = element_text(size = 15, face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    legend.position = "bottom"
+  )
+
+
+min_lat <- 14.0
+max_lat <- 33.0
+min_lon <- -118.0
+max_lon <- -86.0
+anios <- 2015:2026
+magnitud_minima <- 5
+
+
+datos <- read.csv("datos_sismos_2015_2026.csv")
+
+df <- datos %>%
+  filter(type == "earthquake") %>%
+  mutate(fecha_hora = ymd_hms(time, tz="America/Mexico_City"),
+         fecha = as_date(fecha_hora)) %>%
+  filter(!is.na(fecha)) %>%
+  distinct() %>%
+  mutate(
+    categoria_profundidad = case_when(
+      depth < 70  ~ "Superficial (<70 km)",
+      depth >= 70 & depth < 300 ~ "Intermedia (70-300 km)",
+      depth >= 300 ~ "Profunda (>=300 km)",
+      TRUE ~ NA_character_
+    )
+  )
+
+#=================
+# Shape files (placas tectónicas)
+# 1. Validación inicial: Buscar si el shapefile ya está extraído en algún lugar
+rutas_shp_existentes <- list.files(
+  path = ".",
+  pattern = "PB2002_boundaries\\.shp$",
+  recursive = TRUE,
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+if (length(rutas_shp_existentes) > 0) {
+  # Si el archivo ya existe, guardamos su ruta y omitimos el resto
+  ruta_final_shp <- rutas_shp_existentes[1]
+  message("El shapefile ya existe. Omitiendo búsqueda y descompresión del ZIP...")
+  
+} else {
+  # Si no existe, iniciamos el proceso de búsqueda y extracción
+  message("Shapefile no encontrado. Buscando y descomprimiendo el ZIP...")
+  
+  archivos_zip_encontrados <- list.files(
+    path = ".", 
+    pattern = "tectonicplates-master\\.zip$",
+    recursive = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+  
+  if (length(archivos_zip_encontrados) == 0) {
+    stop("No se encontró el ZIP ni el shapefile en ninguna subcarpeta.")
+  }
+  
+  archivo_zip <- archivos_zip_encontrados[1]
+  carpeta_destino <- "./datos_geologicos/"  # o asignarle el nombre que se desee
+  
+  if (!dir.exists(carpeta_destino)) {
+    unzip(
+      zipfile = archivo_zip,
+      exdir = carpeta_destino
+    )
+  }
+  
+  # Buscar el shapefile específico en la carpeta recién creada
+  rutas_shp_nuevas <- list.files(
+    path = carpeta_destino,
+    pattern = "PB2002_boundaries\\.shp$",          
+    recursive = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+  
+  if (length(rutas_shp_nuevas) == 0) {
+    stop("El ZIP se descomprimió, pero no contiene el archivo PB2002_boundaries.shp")
+  }
+  
+  ruta_final_shp <- rutas_shp_nuevas[1]
+}
+
+# 2. Leer el shapefile de las placas tectónicas usando la ruta definitiva
+limites_placas <- st_read(
+  ruta_final_shp,
+  quiet = TRUE
+)
+#print("¡Shapefile de placas tectónicas cargado con éxito!")
+#======================================================================
+
+
+# Cálculo de variables globales para Value Boxes
+total_sismos <- nrow(df)
+mag_maxima <- max(df$mag, na.rm = TRUE)
+pct_superficial <- round(100 * mean(df$categoria_profundidad == "Superficial (<70 km)", na.rm = TRUE), 1)
+```
+
+
+# Panorama Global {data-icon="fa-globe"}
+
+## Row {data-height=130}
+
+### Pregunta de Investigación
+
+**¿Cómo se distribuye espacial y temporalmente la sismicidad de alto impacto (magnitud ≥ 5) en México, y es posible identificar perfiles estadísticamente diferenciables mediante técnicas de aprendizaje no supervisado?**
+
+*Hipótesis: la sismicidad de alto riesgo en México presenta una distribución espacial y temporal heterogénea que puede ser agrupada en regiones con perfiles de comportamiento sísmico distinguibles matemáticamente.*
+
+## Row
+### Total de Sismos Analizados (M>=5)
+
+```{r}
+
+valueBox(total_sismos, icon = "fa-chart-line", color = "primary")
+```
+
+
+### Magnitud Máxima Registrada
+
+```{r}
+valueBox(mag_maxima, icon = "fa-exclamation-triangle", color = "danger")
+```
+
+
+### Eventos Superficiales (<70km)
+
+```{r}
+valueBox(paste0(pct_superficial, "%"), icon = "fa-layer-group", color = "warning")
+```
+
+
+## Row
+### Densidad Espacial: Concentración de Eventos Sísmicos (Magnitud>=5)
+
+```{r}
+
+
+# Crear una paleta de colores basada en la magnitud
+paleta_mag <- colorNumeric(palette = "YlOrRd", domain = df$mag)
+
+mapa_global <- leaflet(data = df) %>%
+  # Proveedor 100% libre, sin marca de agua
+  addProviderTiles(providers$Esri.WorldTopoMap) %>%
+  
+  # Centrar el mapa en México
+  setView(lng = -102.0, lat = 23.5, zoom = 5) %>%
+  
+  # Bloquear el desplazamiento fuera del Bounding Box
+  setMaxBounds(lng1 = -118.0, lat1 = 14.0, lng2 = -86.0, lat2 = 33.0) %>%
+  
+  addCircleMarkers(
+    lng = ~longitude, 
+    lat = ~latitude,
+    radius = ~mag * 1.2,
+    color = ~paleta_mag(mag),
+    stroke = FALSE, 
+    fillOpacity = 0.6,
+    popup = ~paste("<b>Magnitud:</b>", mag, 
+                   "<br><b>Profundidad:</b>", depth, "km",
+                   "<br><b>Fecha:</b>", fecha,
+                   "<br><b>Lugar:</b>", place)
+  ) %>%
+  addLegend("bottomright", pal = paleta_mag, values = ~mag,
+            title = "Magnitud", opacity = 0.8)
+
+mapa_global
+```
+
+
+Correlación Profundidad-Magnitud {data-icon="fa-arrows-alt-v"}
+====================================================================================
+
+```{r}
+# Preparación para el análisis bivariado
+df_num <- df %>% select(mag, depth, latitude, longitude) %>% filter(complete.cases(.))
+cor_pearson  <- cor(df_num$depth, df_num$mag, method = "pearson")
+cor_spearman <- cor(df_num$depth, df_num$mag, method = "spearman")
+kruskal_prof <- kruskal.test(mag ~ categoria_profundidad, data = df)
+```
+
+## Row {data-height=100}
+
+### Pregunta de Investigación Secundaria
+
+¿Existe una correlación estadística significativa entre la profundidad y la magnitud de los sismos?
+
+## Row {data-height=120}
+
+### Correlación de Pearson
+
+```{r}
+valueBox(round(cor_pearson, 3), icon = "fa-arrows-alt-h", color = "info")
+```
+
+### Correlación de Spearman
+
+```{r}
+valueBox(round(cor_spearman, 3), icon = "fa-arrows-alt-h", color = "info")
+```
+
+### Kruskal-Wallis (p-value)
+
+```{r}
+valueBox(format.pval(kruskal_prof$p.value, digits = 3), icon = "fa-flask", color = "info")
+```
+
+## Row
+
+### Profundidad vs. Magnitud
+
+```{r}
+p_prof_mag <- ggplot(df, aes(x = depth, y = mag)) +
+  geom_point(alpha = 0.25, color = "steelblue") +
+  geom_smooth(method = "loess", color = "firebrick", se = TRUE) +
+  geom_smooth(method = "lm", color = "darkgreen", linetype = "dashed", se = FALSE) +
+  labs(x = "Profundidad (km)", y = "Magnitud") +
+  tema
+
+ggplotly(p_prof_mag)
+```
+
+### Magnitud por Categoría de Profundidad
+
+```{r}
+p_mag_prof_cat <- df %>% filter(!is.na(categoria_profundidad)) %>%
+  ggplot(aes(x = categoria_profundidad, y = mag, fill = categoria_profundidad)) +
+  geom_boxplot(alpha = 0.75, outlier.color = "firebrick", outlier.size = 1) +
+  scale_fill_manual(values = c("#FDBE85", "#FD8D3C", "#D94701")) +
+  labs(x = NULL, y = "Magnitud") +
+  tema + theme(legend.position = "none")
+
+ggplotly(p_mag_prof_cat)
+```
+
+## Row {data-height=100}
+
+### Conclusión: Correlación Profundidad-Magnitud
+
+No existe una relación lineal ni monótona relevante entre ambas variables (Pearson ≈ `r round(cor_pearson, 2)`, Spearman ≈ `r round(cor_spearman, 2)`), y Kruskal-Wallis confirma que la magnitud típica no difiere significativamente entre categorías de profundidad. La profundidad no predice la severidad de un sismo — dependen de mecanismos físicos distintos.
+
+
+Regionalización (K-Means) {data-icon="fa-map-marker-alt"}
+====================================================================================
+
+## Row {data-height=100}
+
+### Pregunta de Investigación Secundaria
+
+¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
+```{r}
+
+# Preparación del modelo K-Means
+df_kmeans <- df %>% select(longitude, latitude, depth, mag) %>% na.omit()
+df_escalado <- scale(df_kmeans)
+set.seed(123)
+modelo_kmeans <- kmeans(df_escalado, centers = 4, nstart = 25)
+df$cluster <- as.factor(modelo_kmeans$cluster)
+
+```
+
+
+## Column {data-width=600}
+
+### Agrupamiento Tectónico Identificado (k=4)
+
+```{r}
+
+# Crear una paleta categórica para los 4 clústeres
+paleta_cluster <- colorFactor(palette = "Set1", domain = df$cluster)
+
+mapa_clusters_leaflet <- leaflet(data = df) %>%
+  addProviderTiles(providers$Esri.WorldTopoMap) %>%
+  setView(lng = -102.0, lat = 23.5, zoom = 5) %>%
+  setMaxBounds(lng1 = -118.0, lat1 = 14.0, lng2 = -86.0, lat2 = 33.0) %>%
+  # Capa 1: Sismos coloreados por clúster
+  addCircleMarkers(
+    lng = ~longitude, 
+    lat = ~latitude,
+    radius = 4,
+    color = ~paleta_cluster(cluster),
+    stroke = FALSE, 
+    fillOpacity = 0.8,
+    popup = ~paste("<b>Clúster:</b>", cluster, 
+                   "<br><b>Magnitud:</b>", mag, 
+                   "<br><b>Profundidad:</b>", depth, "km")
+  ) %>%
+  # Capa 2: Límites de placas tectónicas (objeto sf)
+  addPolylines(
+    data = limites_placas, 
+    color = "#00BFFF", 
+    weight = 2, 
+    dashArray = "5, 5",
+    popup = "Límite de Placa Tectónica"
+  ) %>%
+  addLegend("bottomright", pal = paleta_cluster, values = ~cluster,
+            title = "Perfil Sísmico", opacity = 1)
+
+mapa_clusters_leaflet
+```
+
+
+## Column {data-width=400}
+
+### Distribución de la Profundidad por Clúster
+
+```{r}
+
+# Identifica qué trazas son boxplot y ajusta su ancho
+p_prof_cluster <- ggplot(df, aes(x = cluster, y = depth, fill = cluster)) +
+  geom_boxplot(alpha = 0.8, outlier.color = "gray40", outlier.size = 1) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(x = "Clúster (Perfil)", y = "Profundidad (km)") +
+  tema + theme(legend.position = "none")
+
+ggplotly(p_prof_cluster)
+
+```
+
+
+### Distribución de la Magnitud por Clúster
+
+```{r}
+
+p_mag_cluster <- ggplot(df, aes(x = cluster, y = mag, fill = cluster)) +
+  scale_fill_brewer(palette = "Set1")+
+  geom_violin(alpha = 0.5) +
+  geom_boxplot(width = 0.2, outlier.size = 0.1) +
+  labs(subtitle = "Comprobación visual de los perfiles sísmicos",
+    x = "Clúster (Perfil Tectónico)", 
+    y = "Magnitud"
+  ) +
+  tema + theme(legend.position = "none")
+fig <- ggplotly(p_mag_cluster)
+
+# Identifica qué trazas son boxplot y ajusta su ancho
+p_mag_cluster2 <- style(fig, width = 0.15, traces = which(sapply(fig$x$data, function(t) t$type) == "box"))
+
+p_mag_cluster2
+
+```
+
+
+Frecuencia-Magnitud (Gutenberg-Richter) {data-icon="fa-chart-area"}
+====================================================================================
+
+```{r}
+gr_data <- df %>% filter(!is.na(mag)) %>% 
+  group_by(mag) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  arrange(desc(mag)) %>% 
+  mutate(N_acum = cumsum(n))
+gr_fit <- lm(log10(N_acum) ~ mag, data = gr_data)
+b_value <- round(-coef(gr_fit)[2], 2)
+r2_gr   <- round(summary(gr_fit)$r.squared, 3)
+```
+
+## Row {data-height=100}
+
+### Pregunta de Investigación Secundaria
+
+¿Cómo cambia la frecuencia probabilística de eventos sísmicos en función del umbral de magnitud seleccionado?
+
+## Row {data-height=120}
+
+### Parámetro b (Gutenberg-Richter)
+
+```{r}
+valueBox(b_value, icon = "fa-chart-area", color = "info")
+```
+
+### Ajuste del modelo (R²)
+
+```{r}
+valueBox(r2_gr, icon = "fa-check-circle", color = "info")
+```
+
+## Row
+
+### Relación Frecuencia-Magnitud
+
+```{r}
+
+p_gr <- ggplot(gr_data, aes(x = mag, y = N_acum)) +
+  geom_point(color = "darkred", size = 2) + 
+  geom_smooth(method = "lm", color = "blue", se = TRUE, alpha = 0.2) +
+  scale_y_log10() + 
+  labs(x = "Magnitud M", y = "Log10(N)") + 
+  tema
+
+ggplotly(p_gr)
+
+```
+
+## Row {data-height=100}
+
+### Conclusión: Frecuencia-Magnitud
+
+Un *b-value* de `r b_value` (ajuste con R² = `r r2_gr`) confirma que la sismicidad mexicana M≥5 sigue el decaimiento exponencial predicho por Gutenberg-Richter: los eventos moderados dominan la liberación de energía, mientras que los terremotos catastróficos son estadísticamente infrecuentes.
+
+
+Réplicas y Patrones Temporales {data-icon="fa-clock"}
+====================================================================================
+
+```{r}
+prueba_rachas <- runs.test(as.numeric(difftime(df$fecha_hora, lag(df$fecha_hora), units = "hours"))[-1])
+p_value_rachas <- format.pval(prueba_rachas$p.value, digits = 3)
+
+sismo_principal <- df %>% slice_max(mag, n = 1)
+df <- df %>% 
+	mutate(dist_al_evento_principal_km = distHaversine(cbind(longitude, latitude), 
+							   c(sismo_principal$longitude, sismo_principal$latitude)) / 1000, 
+	       dias_desde_evento_principal = as.numeric(difftime(fecha_hora, sismo_principal$fecha_hora, units = "days")))
+
+replicas <- df %>% 
+	filter(dist_al_evento_principal_km <= 200, 
+	       dias_desde_evento_principal > -30, 
+	       dias_desde_evento_principal <= 90) %>% 
+	arrange(fecha_hora)
+
+df_mensual <- df %>% 
+  mutate(mes_anio = floor_date(fecha_hora, "month")) %>% 
+  count(mes_anio) %>%
+  mutate(ma_6  = zoo::rollmean(n, k = 6,  fill = NA, align = "center"), 
+         ma_12 = zoo::rollmean(n, k = 12, fill = NA, align = "center"))
+
+mk_res <- MannKendall(df_mensual$n)
+mk_pvalue <- format.pval(mk_res$sl, digits = 3)
+
+df <- df %>% 
+	arrange(fecha_hora) %>% 
+	mutate(tiempo_entre_sismos_hrs = as.numeric(difftime(fecha_hora, lag(fecha_hora), units = "hours")))
+```
+
+## Row {data-height=100}
+
+### Pregunta de Investigación Secundaria
+
+¿Qué patrones de comportamiento temporal (precursores y réplicas) se observan alrededor de los eventos de magnitud extrema?
+
+## Row {data-height=120}
+
+### Réplicas Detectadas (90 días)
+
+```{r}
+valueBox(nrow(replicas), icon = "fa-bolt", color = "orange")
+```
+
+### Independencia Temporal (P-value Rachas)
+
+```{r}
+valueBox(p_value_rachas, icon = "fa-project-diagram", color = "orange")
+```
+
+### Tendencia a Largo Plazo (P-value Mann-Kendall)
+
+```{r}
+valueBox(mk_pvalue, icon = "fa-chart-line", color = "orange")
+```
+
+## Row
+
+### Distribución de tiempos entre sismos
+
+```{r}
+D_tiempos_b_sismos <- ggplot(df %>% filter(!is.na(tiempo_entre_sismos_hrs), tiempo_entre_sismos_hrs > 0), aes(x = tiempo_entre_sismos_hrs)) +
+  geom_histogram(bins = 60, fill = "purple", alpha = 0.7, color = "white") +
+  scale_x_log10(labels = function(x) format(x, scientific = FALSE)) +
+  labs(subtitle="Escala logarítmica", x = "Horas", y = "Frecuencia") + tema
+
+ggplotly(D_tiempos_b_sismos)
+```
+
+### Respuesta Temporal del Sismo Principal (Evento Magnitud 8.2)
+
+```{r}
+g_sismo_al <- ggplot(replicas, aes(x = fecha, y = mag)) +
+    geom_vline(xintercept = sismo_principal$fecha, color = "red", linetype = "dashed", linewidth = 1) +
+    geom_point(aes(size = mag, color = mag), alpha = 0.7) +
+    geom_segment(aes(x = fecha, xend = fecha, y = 5, yend = mag, color = mag), alpha = 0.4) +
+  scale_color_viridis_c(option = "inferno", direction = -1) + 
+  labs(x = "Fecha", y = "Magnitud") + 
+  tema
+ggplotly(g_sismo_al)
+```
+
+## Row
+
+### Serie mensual y medias móviles
+
+```{r}
+g_mensual <- ggplot(df_mensual, aes(x = mes_anio)) +
+  geom_col(aes(y = n), fill = "gray70", alpha = 0.6) +
+  geom_line(aes(y = ma_6),  color = "orange",  linewidth = 1) +
+  geom_line(aes(y = ma_12), color = "firebrick", linewidth = 1.2) +
+  labs(
+       subtitle = "Gris = conteo mensual | Naranja = MA(6) | Rojo = MA(12)",
+       x = "Fecha", y = "Eventos por mes") +
+  tema
+
+ggplotly(g_mensual)
+```
+
+## Row {data-height=100}
+
+### Conclusión: Patrones Temporales
+
+La prueba de rachas (p `r p_value_rachas`) rechaza la independencia de los tiempos de espera: los sismos se agrupan en el tiempo (réplicas), no ocurren de forma aislada. El sismo principal detonó `r nrow(replicas)` réplicas en la ventana de 90 días, con decaimiento consistente con la ley de Omori. La tendencia de largo plazo (Mann-Kendall, p `r mk_pvalue`) debe leerse con cautela: puede reflejar mejoras en la red de monitoreo tanto como actividad real.
+
+

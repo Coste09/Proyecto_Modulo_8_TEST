@@ -1,4 +1,3 @@
-
 ---
 title: "Análisis Sismos"
 author: ["Araceli Yolanda Cruz Cruz", "Alberto González Padilla", "José Fortino López López", "Karla Valeria Loyola Alarcón", "Luis Antonio Sánchez Montalvo"]
@@ -139,7 +138,7 @@ df <- do.call(rbind, lista_datos)
 ## Limpieza y Preparación
 
 Una vez descargados los datos, es imperativo estructurarlos, aislar únicamente los eventos tectónicos y gestionar valores nulos o duplicados que puedan introducir ruido en los análisis estadísticos.
-
+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
 ```{r}
 df <- df %>%
   separate_wider_delim(
