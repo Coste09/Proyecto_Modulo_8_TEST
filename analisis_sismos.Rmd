@@ -1,5 +1,5 @@
 ---
-title: "Análisis Sismos"
+title: "Análisis Espacial y Agrupamiento de la Sismicidad de Alto Impacto en México (Magnitud>=5)"
 author: ["Araceli Yolanda Cruz Cruz", "Alberto González Padilla", "José Fortino López López", "Karla Valeria Loyola Alarcón", "Luis Antonio Sánchez Montalvo"]
 date: "`r Sys.Date()`"
 output:
@@ -138,7 +138,7 @@ df <- do.call(rbind, lista_datos)
 ## Limpieza y Preparación
 
 Una vez descargados los datos, es imperativo estructurarlos, aislar únicamente los eventos tectónicos y gestionar valores nulos o duplicados que puedan introducir ruido en los análisis estadísticos.
-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
+
 ```{r}
 df <- df %>%
   separate_wider_delim(
@@ -1441,9 +1441,13 @@ df_resultados <- df_limpio %>%
   )
 ```
 
+Conteo de observaciones por clúster tomando `eps=0.35`
+
 ```{r}
 table(df_resultados$cluster_035, useNA = "always")
 ```
+
+Conteo de observaciones por clúster tomando `eps=0.45`
 
 ```{r}
 table(df_resultados$cluster_045, useNA = "always")
