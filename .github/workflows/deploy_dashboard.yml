@@ -32,7 +32,8 @@ jobs:
         run: |
           install.packages(c("rmarkdown", "flexdashboard", "leaflet", "tidyverse",
           "plotly", "dlookr", "lubridate", "knitr", "sf", "factoextra", "randtests",
-          "spdep", "scales", "geosphere", "patchwork", "Kendall"))
+          "spdep", "scales", "geosphere", "patchwork", "Kendall","rnaturalearth", 
+          "rnaturalearthdata"))
         shell: Rscript {0}
 
       - name: Compilar el dashboard a HTML
