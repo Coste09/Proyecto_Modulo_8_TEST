@@ -1,0 +1,1705 @@
+---
+title: "Análisis Sismos"
+author: ["Araceli Yolanda Cruz Cruz", "Alberto González Padilla", "José Fortino López López", "Karla Valeria Loyola Alarcón", "Luis Antonio Sánchez Montalvo"]
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    code_download: true
+    df_print: paged
+    fig_caption: true
+---
+
+# Introducción y Diseño del Estudio
+
+## Pregunta de Investigación
+
+¿Cómo se distribuye espacial y temporalmente la sismicidad de alto impacto (magnitud $\ge$ 5) en México, y es posible identificar perfiles estadísticamente diferenciables de acuerdo a sus comportamiento sísmico mediante técnicas de aprendizaje no supervisado?
+
+
+## Preguntas Secundarias
+
+- ¿Existe una correlación estadística significativa entre la profundidad y la magnitud de los sismos?
+- ¿Se pueden identificar y delimitar regiones territoriales con perfiles sísmicos diferentes basándose en sus características físicas?
+- ¿Qué patrones de comportamiento temporal (precursores y réplicas) se observan alrededor de los eventos de magnitud extrema?
+- ¿Cómo cambia la frecuencia probabilística de eventos sísmicos en función del umbral de magnitud seleccionado?
+
+
+**Hipótesis:** La sismicidad de alto riesgo en México presenta una distribución espacial y temporal heterogénea que puede ser agrupada en regiones con perfiles de comportamiento sísmico distinguibles matemáticamente.
+
+**Variable Objetivo:** Al utilizar principalmente un enfoque de aprendizaje no supervisado (K-Means), no existe una variable dependiente estricta a predecir. Sin embargo, para fines de análisis estadístico, la Magnitud funge como la variable focal de interés, mientras que el Perfil Sísmico (Clúster) es la variable objetivo generada por el algoritmo.
+
+**Variables Explicativas:** Latitud, Longitud, Profundidad y Tiempo (Fecha/Hora).
+
+**Población de Interés:** Toda la actividad tectónica y sísmica generada por la interacción de placas que afecte el territorio nacional.
+
+**Unidad de Análisis:** Cada evento sísmico individual registrado por la red instrumental.
+
+**Periodo:** 2015 a la actualidad (según el rango real descargado vía API).
+
+**Alcance Geográfico:** Territorio continental de los Estados Unidos Mexicanos y sus franjas tectónicas marítimas adyacentes (Golfo de California, Océano Pacífico y la Trinchera Mesoamericana).
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)   # incluye dplyr, ggplot2, tidyr, etc.
+library(dlookr)      # diagnóstico de calidad de datos
+library(lubridate)   # manejo de fechas
+library(knitr)       # tablas (kable)
+library(GGally)
+library(corrplot)    # correlaciones
+library(zoo)         # promedios móviles
+library(sf)          # simple features para leer shape files
+library(maps)
+library(grid)
+library(rnaturalearth) # mapa
+library(rnaturalearthdata)
+library(factoextra)  # Algoritmo K-Means (estadístico de Hopkins, Codo, Silueta)
+library(dbscan)
+library(cluster)
+library(randtests)   # prueba de rachas
+library(spdep)       # Índice de Moran
+library(scales)      # Necesario para trans_breaks(transformación logarítmica)
+library(geosphere)   # distHaversine
+library(patchwork) 
+
+tema <- theme_minimal() +
+  theme(
+    plot.title = element_text(size = 15, face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    axis.title.x = element_text(size = 12, margin = margin(t = 8), hjust = 0.5),
+    axis.title.y = element_text(size = 12, margin = margin(r = 8), hjust = 0.5),
+    legend.title = element_text(size = 11, hjust = 0.5),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+  )
+```
+
+
+# Adquisición y Procesamiento de Datos
+
+En esta fase se establece el perímetro de estudio y se extraen los registros crudos de la API del Servicio Geológico de los Estados Unidos (USGS). Posteriormente, la información se procesa y limpia para asegurar la integridad de los datos antes de cualquier modelado.
+
+## Lectura de Datos
+
+Las coordenadas que utilizamos forman lo que en cartografía y programación se conoce como un "Bounding Box" (caja delimitadora). Dado que la API del USGS solo entiende rectángulos, trazamos un cuadrado imaginario tomando los puntos geográficos extremos de México con una pequeña holgura.
+
+* **Latitud Máxima (max_lat = 33.0):** Asegura cubrir la frontera norte y capturar sismos de la falla de San Andrés.
+* **Latitud Mínima (min_lat = 14.0):** Crucial para capturar sismos de la fosa mesoamericana que impactan Chiapas y Oaxaca.
+* **Longitud Mínima u Oeste (min_lon = -118.0):** Cubre la península y el Golfo de California, zona de alta actividad sísmica.
+* **Longitud Máxima o Este (max_lon = -86.0):** Garantiza que toda la Península de Yucatán quede dentro del rectángulo.
+
+```{r descarga-datos}
+
+# Coordenadas aproximadas para México
+min_lat <- 14.0
+max_lat <- 33.0
+min_lon <- -118.0
+max_lon <- -86.0
+
+# Años a descargar y magnitud mínima
+anios <- 2015:2026
+magnitud_minima <- 5
+
+lista_datos <- list()
+
+for (anio in anios) {
+  fecha_inicio <- paste0(anio, "-01-01")
+  fecha_fin <- ifelse(anio == year(Sys.Date()), as.character(Sys.Date()), paste0(anio, "-12-31"))
+
+  url <- paste0("https://earthquake.usgs.gov/fdsnws/event/1/query?format=csv",
+              "&starttime=", fecha_inicio,
+              "&endtime=", fecha_fin,
+              "&minmagnitude=", magnitud_minima,
+              "&minlatitude=", min_lat,
+              "&maxlatitude=", max_lat,
+              "&minlongitude=", min_lon,
+              "&maxlongitude=", max_lon)
+
+  print(paste("Descargando datos de", anio, "..."))
+  lista_datos[[as.character(anio)]] <- read.csv(url)
+
+  Sys.sleep(3) # Pausa para no saturar el servidor del USGS
+}
+
+df <- do.call(rbind, lista_datos)
+
+```
+
+## Limpieza y Preparación
+
+Una vez descargados los datos, es imperativo estructurarlos, aislar únicamente los eventos tectónicos y gestionar valores nulos o duplicados que puedan introducir ruido en los análisis estadísticos.
+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
+```{r}
+df <- df %>%
+  separate_wider_delim(
+    cols = place,
+    delim = ", ",
+    names = c(NA, "pais"),
+    cols_remove = FALSE,
+    too_few = "align_start",   
+    too_many = "merge"         
+  )
+
+```
+
+La descarga incluye eventos que no son sismos tectónicos (explosiones, eventos de cantera, etc.), por lo que filtramos únicamente `type == "earthquake"`.
+
+```{r}
+df <- df %>% filter(type == "earthquake")
+
+```
+
+Convertimos el tiempo universal a hora local de México:
+
+```{r}
+df <- df %>%
+  mutate(fecha_hora = ymd_hms(time, tz="America/Mexico_City"),
+         fecha = as_date(fecha_hora)) %>%
+  filter(!is.na(fecha))
+
+```
+
+Verificación de registros duplicados:
+
+```{r}
+gestionar_duplicados <- function(datos) {
+  filas_iniciales <- nrow(datos)
+  datos_limpios <- datos %>% dplyr::distinct()
+  filas_finales <- nrow(datos_limpios)
+  num_duplicados <- filas_iniciales - filas_finales
+
+  if (num_duplicados == 0) {
+    print("No se encontraron filas duplicadas")
+  } else {
+    print(paste0("El dataframe contenía ", num_duplicados, " registros duplicados"))
+  }
+
+  return(datos_limpios)
+}
+
+df <- gestionar_duplicados(df)
+
+```
+
+
+Valores Faltantes
+
+```{r}
+df_nas <- dlookr::diagnose(df) %>%
+  dplyr::select(variables, types, missing_count, missing_percent) %>%
+  arrange(desc(missing_percent))
+
+df_nas
+
+```
+
+
+
+```{r, warning=FALSE}
+df_solo_nulos <- df %>% select(where(~any(is.na(.))))
+p <- suppressWarnings(dlookr::plot_na_pareto(df_solo_nulos))
+
+max_nas <- max(colSums(is.na(df_solo_nulos)))
+limite_superior <- max_nas * 1.05
+
+p_custom <- p +
+  labs(title = "Análisis de Valores Faltantes: Sismos", x = "Variables") +
+  theme(
+    plot.title = element_text(size = 16),
+    axis.title.x = element_text(size = 13, margin = margin(t = 10), hjust = 0.5),
+    axis.title.y = element_text(size = 13, margin = margin(r = 10), hjust = 0.5),
+    axis.text.x = element_text(hjust = 1, size = 12),
+    legend.title = element_text(size = 13, hjust = 0.5),
+    legend.text = element_text(size = 11),
+    plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+  ) +
+  coord_cartesian(ylim = c(0, limite_superior))
+
+print(p_custom)
+
+```
+
+**Decisión sobre valores faltantes:** Las variables centrales para este proyecto (`mag`, `depth`, `latitude`, `longitude`, `time`) no presentan valores faltantes relevantes. Los NA's se concentran en metadatos secundarios. No se aplica imputación; las columnas con NA relevante se excluyen del análisis multivariado y se conservan solo como referencia.
+
+# Análisis Exploratorio de Datos (EDA)
+
+**Objetivo de esta sección:** entender el conjunto de datos a fondo —cómo se distribuyen magnitud, profundidad, ubicación y tiempo— antes de pasar a relaciones bivariadas y modelado.
+
+## Resumen Numérico y Distribuciones
+
+
+```{r}
+
+numeric_columns <- names(df)[sapply(df, is.numeric)]
+vars_objetivo <- intersect(c("mag", "depth", "latitude", "longitude"), numeric_columns)
+
+resumen_numerico <- dlookr::describe(df, all_of(vars_objetivo)) %>%
+  select(described_variables, n, na, mean, sd, se_mean, IQR,
+         skewness, kurtosis, p00, p25, p50, p75, p100)
+
+kable(resumen_numerico, digits = 2)
+
+```
+
+```{r}
+interpretacion_forma <- resumen_numerico %>%
+  mutate(
+    interpretacion_asimetria = case_when(
+      skewness > 1  ~ "Asimetría fuerte a la derecha (cola de eventos extremos)",
+      skewness > 0.5 ~ "Asimetría moderada a la derecha",
+      skewness < -0.5 ~ "Asimetría a la izquierda",
+      TRUE ~ "Aproximadamente simétrica"
+    ),
+    interpretacion_curtosis = case_when(
+      kurtosis > 1 ~ "Leptocúrtica (colas pesadas, extremos frecuentes)",
+      kurtosis < -1 ~ "Platicúrtica (más plana)",
+      TRUE ~ "Cercana a la normal"
+    )
+  ) %>%
+  select(described_variables, interpretacion_asimetria, interpretacion_curtosis)
+
+kable(interpretacion_forma)
+
+```
+
+```{r, echo=FALSE}
+mag_skew   <- round(resumen_numerico$skewness[resumen_numerico$described_variables == "mag"], 2)
+depth_skew <- round(resumen_numerico$skewness[resumen_numerico$described_variables == "depth"], 2)
+
+```
+
+**Interpretación:** `mag` y `depth` son las únicas dos variables cuya forma tiene lectura física — ambas están sesgadas a la derecha (asimetría `r mag_skew` y `r depth_skew` respectivamente), es decir, hay muchos eventos moderados y pocos extremos. `latitude`/`longitude` en cambio solo describen el bounding box artificial.
+
+### Distribución de la Magnitud
+
+```{r}
+
+# --- Estadísticos ---
+resumen_mag <- dlookr::describe(df, mag) %>%
+  select(mean, sd, p25, p50, p75, skewness, kurtosis)
+
+cat(sprintf(
+  "Magnitud — Media: %.2f | Mediana: %.2f | SD: %.2f | Asimetría: %.2f | Curtosis: %.2f\n",
+  resumen_mag$mean, resumen_mag$p50, resumen_mag$sd,
+  resumen_mag$skewness, resumen_mag$kurtosis
+))
+
+```
+
+
+```{r}
+
+# --- Boxplot delgado (parte superior) ---
+p_box_mag <- ggplot(df, aes(x = mag, y = "")) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7, outlier.color = "firebrick", width = 0.6) +
+  labs(x = NULL, y = NULL) +
+  theme_void()
+
+# --- Histograma + densidad (parte inferior) ---
+p_hist_mag <- ggplot(df, aes(x = mag)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                  fill = "steelblue", color = "white", alpha = 0.85) +
+  geom_density(color = "firebrick", linewidth = 1) +
+  geom_vline(xintercept = resumen_mag$mean, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = resumen_mag$p50, linetype = "dotted", color = "darkgreen") +
+  #labs(title = "Distribución de la Magnitud",
+  #     subtitle = "Línea negra = media | Línea verde = mediana | Curva roja = densidad",
+   #    x = "Magnitud", y = "Densidad") +
+  tema
+
+# --- Combinar en una sola figura compacta ---
+p_box_mag / p_hist_mag + plot_layout(heights = c(1, 5)) +
+  plot_annotation(
+    title = "Distribución de la Magnitud",
+    subtitle = "Línea negra = media | Línea verde = mediana | Curva roja = densidad", theme = tema
+  )
+
+```
+
+```{r}
+tabla_freq_mag <- df %>%
+  mutate(rango_mag = cut(mag, breaks = seq(5, ceiling(max(mag, na.rm = TRUE)), by = 0.5), right = FALSE, include.lowest = TRUE)) %>%
+  count(rango_mag) %>%
+  mutate(porcentaje = round(100 * n / sum(n), 2))
+kable(tabla_freq_mag)
+
+```
+
+```{r, echo=FALSE}
+pct_primer_rango <- round(tabla_freq_mag$porcentaje[1], 1)
+
+```
+
+**Interpretación:** la mayor concentración de eventos ocurre cerca del límite inferior M=5 (`r pct_primer_rango`% del catálogo cae en el primer rango, 5.0–5.4) y la frecuencia disminuye conforme aumenta la magnitud; este patrón es consistente con la relación frecuencia–magnitud (Gutenberg–Richter). Es importante recordar que por diseño, estamos viendo la cola de eventos grandes, no el fenómeno sísmico completo.
+
+### Distribución de la Profundidad
+
+Se clasifica con el estándar sismológico: superficial (<70 km), intermedia (70-300 km) y profunda (≥300 km).
+
+```{r}
+df <- df %>%
+  mutate(
+    categoria_profundidad = case_when(
+      depth < 70  ~ "Superficial (<70 km)",
+      depth >= 70 & depth < 300 ~ "Intermedia (70-300 km)",
+      depth >= 300 ~ "Profunda (>=300 km)",
+      TRUE ~ NA_character_
+    ),
+    categoria_profundidad = factor(categoria_profundidad, levels = c("Superficial (<70 km)", "Intermedia (70-300 km)", "Profunda (>=300 km)"))
+  )
+
+tabla_profundidad <- df %>% filter(!is.na(categoria_profundidad)) %>% 
+  count(categoria_profundidad) %>% 
+  mutate(porcentaje = round(100 * n / sum(n), 2))
+kable(tabla_profundidad)
+
+```
+
+
+```{r}
+# --- Estadísticos ---
+resumen_depth <- dlookr::describe(df, depth) %>%
+  select(mean, sd, p25, p50, p75, skewness, kurtosis)
+
+pct_superficial <- round(100 * mean(df$categoria_profundidad == "Superficial (<70 km)", na.rm = TRUE), 1)
+
+cat(sprintf(
+  "Profundidad — Media: %.1f km | Mediana: %.1f km | SD: %.1f | Asimetría: %.2f | %% Superficial: %.1f%%\n",
+  resumen_depth$mean, resumen_depth$p50, resumen_depth$sd,
+  resumen_depth$skewness, pct_superficial
+))
+
+```
+
+```{r}
+
+# --- Boxplot delgado (gráfica superior) ---
+p_box_depth <- ggplot(df, aes(x = depth, y = "")) +
+  geom_boxplot(fill = "#FD8D3C", alpha = 0.7, outlier.color = "firebrick", width = 0.6) +
+  labs(x = NULL, y = NULL) +
+  theme_void()
+
+# --- Histograma coloreado por categoría sismológica (gráfica inferior) ---
+p_hist_depth <- ggplot(df %>% filter(!is.na(categoria_profundidad)),
+                        aes(x = depth, fill = categoria_profundidad)) +
+  geom_histogram(bins = 30, color = "white", alpha = 0.85) +
+  geom_vline(xintercept = resumen_depth$mean, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("#FDBE85", "#FD8D3C", "#D94701"), name = "Categoría") +
+  #labs(title = "Distribución de la Profundidad",
+   #    subtitle = "Línea negra = media | Color = categoría sismológica estándar",
+   #    x = "Profundidad (km)", y = "Número de eventos") +
+  tema
+
+# --- Combinar en una sola figura compacta ---
+p_box_depth / p_hist_depth + plot_layout(heights = c(1, 5)) +
+  plot_annotation(
+    title = "Distribución de la Profundidad",
+    subtitle = "Línea negra = media | Color = categoría sismológica",
+    theme = tema
+  )
+
+```
+
+```{r, echo=FALSE}
+pct_superficial_desc <- tabla_profundidad$porcentaje[tabla_profundidad$categoria_profundidad == "Superficial (<70 km)"]
+
+```
+
+**Interpretación:** `r pct_superficial_desc`% de los sismos M≥5 son superficiales (<70 km), lo cual es consistente con que la ruptura más energética entre placas ocurre en la zona de contacto somero de la subducción, cerca de la costa del Pacífico. Los eventos intermedios y profundos son claramente minoritarios — corresponden a un mecanismo físico distinto (sismicidad intraplaca dentro de la losa que se hunde) que retomaremos al interpretar los clústeres de K-Means.
+
+### Análisis de Outliers (Criterio IQR)
+
+```{r}
+numeric_columns <- names(df)[sapply(df, is.numeric)]
+tabla_outliers <- map_dfr(numeric_columns, function(columna) {
+  Q3 <- quantile(df[[columna]], probs = 0.75, na.rm = TRUE)
+  Q1 <- quantile(df[[columna]], probs = 0.25, na.rm = TRUE)
+  IQR_val <- Q3 - Q1
+  limite_superior <- Q3 + 1.5 * IQR_val
+  limite_inferior <- Q1 - 1.5 * IQR_val
+
+  n_outliers <- sum(df[[columna]] > limite_superior | df[[columna]] < limite_inferior, na.rm = TRUE)
+  n_validos <- sum(!is.na(df[[columna]]))
+
+  tibble(
+    variable = columna, n_outliers = n_outliers,
+    pct_outliers = round(100 * n_outliers / n_validos, 2)
+  )
+})
+kable(tabla_outliers)
+
+```
+
+> Nota: en `mag`, los "outliers" detectados por IQR corresponden precisamente a los sismos más grandes (la cola de interés del estudio), no a errores de datos — así que no se eliminan, solo se documentan.
+
+## Distribución Espacial y Temporal
+
+```{r}
+tabla_pais <- df %>% count(pais, sort = TRUE) %>% mutate(porcentaje = round(100 * n / sum(n), 2))
+kable(head(tabla_pais, 10))
+
+```
+
+```{r, echo=FALSE}
+pais_top <- tabla_pais$pais[1]
+pct_pais_top <- tabla_pais$porcentaje[1]
+
+```
+
+**Interpretación Espacial:** `r pais_top` concentra la mayor proporción de eventos (`r pct_pais_top`% del catálogo), lo que ya delinea a simple vista la geografía de la sismicidad mexicana antes de correr cualquier modelo.
+
+```{r}
+meses_es <- c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")
+dias_es <- c("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
+
+df <- df %>%
+  mutate(
+    anio_evento = year(fecha_hora),
+    mes_evento = factor(meses_es[month(fecha_hora)], levels = meses_es),
+    dia_semana = factor(dias_es[wday(fecha_hora, week_start = 1)], levels = dias_es),
+    hora_evento = hour(fecha_hora)
+  )
+
+```
+
+Eventos por año
+
+```{r}
+tabla_anio <- df %>% count(anio_evento)
+ggplot(tabla_anio, aes(x = anio_evento, y = n)) +
+  geom_col(fill = "steelblue", alpha = 0.85) +
+  geom_text(aes(label = n), vjust = -0.4, size = 3.5) +
+  scale_x_continuous(breaks = seq(min(tabla_anio$anio_evento), max(tabla_anio$anio_evento), by = 1))+
+  labs(title = "Eventos por año", x = "Año", y = "Número") + tema
+
+```
+
+Eventos por mes
+
+```{r}
+
+ggplot(df, aes(x = mes_evento)) +
+  geom_bar(fill = "darkorange", alpha = 0.85) +
+  geom_text(aes(label = ..count..), stat = "count",vjust = -0.4, size = 3.5) +
+  labs(title = "Número de eventos por mes",
+       subtitle = "Agregado sobre todo el periodo",
+       x = "Mes", y = "Número de eventos") +
+  tema
+```
+
+Por día de la semana
+
+```{r}
+ggplot(df, aes(x = dia_semana)) +
+  geom_bar(fill = "seagreen", alpha = 0.85) +
+  geom_text(aes(label = ..count.., vjust = -1), stat = "count")+
+  labs(title = "Número de eventos por día de la semana",
+       subtitle = "Sirve para detectar sesgos de reporte, no causas físicas",
+       x = "Día", y = "Número de eventos") +
+  ylim(c(0,110))+
+  tema
+```
+
+Por hora del día
+
+```{r}
+ggplot(df, aes(x = hora_evento)) +
+  geom_histogram(bins = 24, fill = "steelblue", alpha = 0.8, color = "white") +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  labs(title = "Número de eventos por hora del día (local México)",
+       x = "Hora local", y = "Número de eventos") +
+  tema
+```
+
+
+```{r}
+resumen_consolidado <- tibble(
+  metrica = c("Total de eventos", "Periodo cubierto", "Magnitud promedio",
+              "Magnitud mediana", "Magnitud máxima", "Profundidad promedio (km)",
+              "% eventos superficiales (<70km)", "Año con más eventos"),
+  valor = c(
+    nrow(df),
+    paste(min(df$anio_evento, na.rm = TRUE), "-", max(df$anio_evento, na.rm = TRUE)),
+    round(mean(df$mag, na.rm = TRUE), 2),
+    round(median(df$mag, na.rm = TRUE), 2),
+    max(df$mag, na.rm = TRUE),
+    round(mean(df$depth, na.rm = TRUE), 2),
+    paste0(round(100 * mean(df$categoria_profundidad == "Superficial (<70 km)", na.rm = TRUE), 1), "%"),
+    as.character(tabla_anio$anio_evento[which.max(tabla_anio$n)])
+  )
+)
+
+kable(resumen_consolidado)
+```
+
+**Interpretación:** el conteo por año debe leerse con cuidado — un incremento en el tiempo puede reflejar mejoras en la red de monitoreo (más estaciones, mejor detección de eventos pequeños dentro del umbral) tanto como un cambio real en la actividad tectónica, y el catálogo por sí solo no permite separar ambas causas. En cambio, mes, día de la semana y hora del día **no deberían** mostrar ningún patrón con causa física real — las placas no revisan el calendario — así que si aparece alguno, es más probable que sea un artefacto de reporte que un hallazgo sismológico genuino. Esta distinción es clave para no confundir sesgo de los datos con evidencia real en las conclusiones.
+
+La actividad no es uniforme en espacio ni en tiempo, lo cual es un prerrequisito para que tenga sentido buscar clústeres geográficos con K-Means. 
+
+
+# Preguntas de Investigación: Dimensiones Físicas y Temporales
+
+Con una comprensión sólida de las variables individuales, esta sección aborda directamente las interacciones estadísticas, comprobando hipótesis físicas y patrones temporales alrededor de los grandes sismos.
+
+## ¿Existe relación entre profundidad y magnitud?
+
+Para resolver esta pregunta se realizará un análisis estadístico y visual bivariado, con el objetivo de evaluar si la profundidad influye en la fuerza del evento.
+
+```{r}
+df_num <- df %>% select(mag, depth, latitude, longitude) %>% filter(complete.cases(.))
+
+par(xpd = TRUE)
+matriz_cor <- cor(df_num, method = "pearson")
+corrplot(matriz_cor, method = "color", type = "upper", addCoef.col = "black", tl.col = "black", tl.srt = 0, title = "Correlaciones (Pearson)", mar = c(0,0,5,0))
+
+```
+
+```{r}
+cor_test_results <- map_dfr(combn(names(df_num), 2, simplify = FALSE), function(par) {
+  test <- cor.test(df_num[[par[1]]], df_num[[par[2]]])
+  tibble(variable_1 = par[1], variable_2 = par[2], r = round(test$estimate, 3), p_value = format.pval(test$p.value, digits = 3))
+})
+kable(cor_test_results, caption = "Correlaciones de Pearson con IC 95%")
+
+```
+
+**Interpretación:** La correlación lineal entre `depth` y `mag` es débil, lo que sugiere que la profundidad por sí sola no predice bien la magnitud de un sismo — algo esperable, ya que ambas dependen más del mecanismo de ruptura específico que de una relación lineal simple.
+
+```{r}
+matriz_cor_sp <- cor(df_num, method = "spearman")
+par(xpd = TRUE)
+corrplot(matriz_cor_sp, method = "color", type = "upper", addCoef.col = "black", tl.col = "black", tl.srt = 0, title = "Correlaciones (Spearman)", mar = c(0,0,5,0))
+
+```
+
+**Interpretación:** Si difiere notablemente de Pearson, es señal de que hay una relación no lineal o dominada por unos cuantos valores extremos. Dado el sesgo ya documentado en ambas variables, Spearman es la lectura más confiable aquí.
+
+```{r}
+p_prof_mag <- ggplot(df, aes(x = depth, y = mag)) +
+  geom_point(alpha = 0.25, color = "steelblue") +
+  geom_smooth(method = "loess", color = "firebrick", se = TRUE) +
+  geom_smooth(method = "lm", color = "darkgreen", linetype = "dashed", se = FALSE) +
+  labs(title = "Profundidad vs Magnitud", x = "Profundidad (km)", y = "Magnitud") + tema
+print(p_prof_mag)
+
+```
+
+De la gráfica de dispersión observamos una densa aglomeración de eventos en los primeros 50 kilómetros de profundidad. Esta concentración evidencia que la inmensa mayoría de la energía sísmica en México se libera en las capas superficiales.
+
+```{r}
+df %>% filter(!is.na(categoria_profundidad)) %>%
+  ggplot(aes(x = categoria_profundidad, y = mag, fill = categoria_profundidad)) +
+  geom_boxplot(alpha = 0.75, outlier.color = "firebrick", outlier.size = 1) +
+  scale_fill_manual(values = c("#FDBE85", "#FD8D3C", "#D94701")) +
+  labs(title = "Magnitud por categoría de profundidad", x = NULL, y = "Magnitud") + tema + theme(legend.position = "none")
+
+```
+
+```{r}
+kruskal_prof <- kruskal.test(mag ~ categoria_profundidad, data = df)
+print(kruskal_prof)
+
+```
+
+**Análisis de Relación: Profundidad vs. Magnitud (Eventos $\ge$ 5):**
+
+* **Ausencia de correlación lineal y monótona:** La matriz de Pearson muestra una correlación de 0.01 entre magnitud y profundidad. La matriz de Spearman arroja un valor de -0.09. Ambos confirman que un aumento o disminución en la profundidad no altera la magnitud del evento.
+* **Tendencia plana en la dispersión continua:** La línea de regresión lineal (verde punteada) es completamente horizontal a lo largo de todas las profundidades.
+* **Igualdad de medianas y confirmación estadística:** Las gráficas de cajas muestran medianas casi idénticas. Esto se respalda con Kruskal-Wallis (al ser un valor p superior a 0.05, no hay evidencia para rechazar la hipótesis nula).
+* **Concentración de eventos extremos (Outliers):** Los sismos de mayor magnitud extrema se concentran casi exclusivamente en la categoría "Superficial (<70 km)".
+
+**Conclusión:** No existe una relación dependiente ni un patrón significativo entre la profundidad a la que ocurre un sismo y su magnitud.
+
+## ¿Cómo cambia el número de eventos según el umbral de magnitud? (Ley Gutenberg-Richter)
+
+**Análisis de Frecuencia-Magnitud y la Ley de Gutenberg-Richter**
+
+Este principio clásico de la sismología establece un modelo matemático que cuantifica la relación Frecuencia-Magnitud. Se analiza primero de forma descriptiva y posteriormente mediante regresión lineal, la cual demuestra que la frecuencia de los sismos decae de manera exponencial: $\log_{10} N = a - bM$
+
+```{r}
+df_frecuencia <- df%>%
+  mutate(categoria_mag = cut(mag, 
+                             breaks = c(4.9, 5.9, 6.9, 7.9, 10), 
+                             labels = c("5.0 - 5.9", "6.0 - 6.9", "7.0 - 7.9", "8.0+"))) %>%
+  group_by(categoria_mag) %>% summarise(conteo = n()) %>% filter(!is.na(categoria_mag))
+
+ggplot(df_frecuencia, aes(x = categoria_mag, y = conteo, fill = categoria_mag)) +
+  geom_bar(stat = "identity", color = "gray", alpha = 0.8) +
+  geom_text(aes(label = conteo), vjust = -0.5, size = 4) +
+  scale_fill_brewer(palette = "YlOrRd") +
+  labs(title = "Frecuencia de Sismos por Rango", 
+       x = "Rango", y = "Conteo") + 
+  tema + 
+  theme(legend.position = "none")
+
+```
+
+```{r}
+gr_data <- df %>% filter(!is.na(mag)) %>% 
+	group_by(mag) %>% 
+	summarise(n = n(), .groups = "drop") %>% 
+	arrange(desc(mag)) %>% 
+	mutate(N_acum = cumsum(n))
+
+gr_fit <- lm(log10(N_acum) ~ mag, data = gr_data)
+b_value <- -coef(gr_fit)[2]
+a_value <-  coef(gr_fit)[1]
+
+ggplot(gr_data, aes(x = mag, y = N_acum)) +
+  geom_point(color = "darkred", size = 2) + 
+  geom_smooth(method = "lm", color = "blue", se = TRUE, alpha = 0.2) +
+  scale_y_log10() + 
+  labs(title = "Ley de Gutenberg-Richter", 
+       subtitle = sprintf("log10(N) = %.2f - %.2f·M", a_value, b_value), 
+       x = "Magnitud", 
+       y = "N") + 
+  tema
+
+```
+
+```{r, echo=FALSE}
+b_value_r <- round(b_value, 2)
+r2_gr <- round(summary(gr_fit)$r.squared, 3)
+
+```
+
+**Interpretación:** El análisis evidencia claramente el decaimiento exponencial característico. La inmensa mayoría de la actividad se concentra en las magnitudes menores (388 eventos de 5.0 a 5.9). Este decaimiento es formalizado matemáticamente arrojando la ecuación $\log_{10}(N) = 6.81 - 0.86 \cdot M$. Un *b-value* de `r b_value_r` indica qué tan rápido disminuye la frecuencia de eventos conforme sube la magnitud. El ajuste ($R^2 =$ `r r2_gr`) confirma qué tan bien la relación log-lineal describe estos datos empíricos.
+
+## ¿Qué patrones temporales se observan en eventos extremos?
+
+Los grandes sismos no son eventos aislados, sino que alteran el estado de estrés de la corteza desatando réplicas y enjambres sísmicos.
+
+```{r, message=FALSE, warning=FALSE}
+
+df_mensual <- df %>% 
+  mutate(mes_anio = floor_date(fecha_hora, "month")) %>% 
+  count(mes_anio) %>%
+  mutate(ma_6  = zoo::rollmean(n, k = 6,  fill = NA, align = "center"), 
+         ma_12 = zoo::rollmean(n, k = 12, fill = NA, align = "center"))
+
+
+ggplot(df_mensual, aes(x = mes_anio)) +
+  geom_col(aes(y = n), fill = "gray70", alpha = 0.6) +
+  geom_line(aes(y = ma_6),  color = "orange",  linewidth = 1) +
+  geom_line(aes(y = ma_12), color = "firebrick", linewidth = 1.2) +
+  labs(title = "Serie mensual y medias móviles",
+       subtitle = "Gris = conteo mensual | Naranja = MA(6) | Rojo = MA(12)",
+       x = "Fecha", y = "Eventos por mes") +
+  tema
+
+```
+
+```{r}
+if (requireNamespace("Kendall", quietly = TRUE)) {
+  library(Kendall)
+  mk <- MannKendall(df_mensual$n)
+  print(mk)
+}
+
+```
+
+**Interpretación:** Mann-Kendall prueba formalmente si existe una tendencia monótona en el conteo mensual. Solo confirma que el patrón no es ruido aleatorio, no puede distinguir entre "mejoras en la instrumentación" o "más sismicidad real".
+
+
+```{r}
+
+df <- df %>% 
+	arrange(fecha_hora) %>% 
+	mutate(tiempo_entre_sismos_hrs = as.numeric(difftime(fecha_hora, lag(fecha_hora), units = "hours")))
+
+ggplot(df %>% filter(!is.na(tiempo_entre_sismos_hrs), tiempo_entre_sismos_hrs > 0), aes(x = tiempo_entre_sismos_hrs)) +
+  geom_histogram(bins = 60, fill = "purple", alpha = 0.7, color = "white") +
+  scale_x_log10(labels = function(x) format(x, scientific = FALSE)) +
+  labs(title = "Distribución de tiempos entre sismos", subtitle="Escala logarítmica", x = "Horas", y = "Frecuencia") + tema
+
+```
+
+**Justificación de la escala:** Se utilizó `scale_x_log10()` porque los tiempos presentan una variación extrema.
+
+* **Sismicidad de fondo:** El bloque principal se concentra entre las 10 y 1,000 horas, indicando el tiempo de espera normal entre sismos independientes.
+* **Agrupamiento temporal:** La extensa cola hacia la izquierda demuestra eventos separados por lapsos muy cortos, evidenciando réplicas y enjambres.
+
+Prueba de rachas (Wald-Wolfowitz):
+
+```{r}
+prueba_rachas <- runs.test(df$tiempo_entre_sismos_hrs)
+p_value_runs_test <-prueba_rachas$p.value
+print(prueba_rachas)
+
+```
+
+El valor p (`r p_value_runs_test`) es drásticamente menor a $0.05$. En términos sismológicos, esto demuestra matemáticamente que los tiempos de espera cortos tienden a agruparse (un sismo desencadena otros), rechazando la hipótesis de independencia.
+
+Evento de septiembre 2017:
+
+```{r}
+sismo_principal <- df %>% slice_max(mag, n = 1)
+df <- df %>% 
+	mutate(dist_al_evento_principal_km = distHaversine(cbind(longitude, latitude), 
+							   c(sismo_principal$longitude, sismo_principal$latitude)) / 1000, 
+	       dias_desde_evento_principal = as.numeric(difftime(fecha_hora, sismo_principal$fecha_hora, units = "days")))
+
+replicas <- df %>% 
+	filter(dist_al_evento_principal_km <= 200, 
+	       dias_desde_evento_principal > -30, 
+	       dias_desde_evento_principal <= 90) %>% 
+	arrange(fecha_hora)
+
+ggplot(replicas, aes(x = fecha, y = mag)) +
+    geom_vline(xintercept = sismo_principal$fecha, color = "red", linetype = "dashed", linewidth = 1) +
+    geom_point(aes(size = mag, color = mag), alpha = 0.7) +
+    geom_segment(aes(x = fecha, xend = fecha, y = 5, yend = mag, color = mag), alpha = 0.4) +
+  scale_color_viridis_c(option = "inferno", direction = -1) + 
+  labs(title = "Secuencia del Gran Sismo", x = "Fecha", y = "Magnitud") + 
+  tema
+
+```
+
+**Análisis de la Secuencia Temporal: Sismo Magnitud 8.2**
+
+Nota Metodológica sobre Sesgo Instrumental:
+
+Es imperativo señalar que, debido al umbral establecido para este proyecto ($M \ge 5$), la visualización captura exclusivamente las réplicas de impacto significativo. Las redes sismológicas registran miles de microsismos y eventos menores a magnitud 5 que conforman la curva de decaimiento completa tras un terremoto de esta escala. Estos datos fueron excluidos intencionalmente para mantener la congruencia metodológica y enfocar el análisis en la sismicidad de alto riesgo.
+
+Los umbrales de 200 km y 90 días son una definición operativa razonable, no un estándar sismológico único — con otro criterio el conteo de "réplicas" cambiaría.
+
+* **Baja incidencia aparente de eventos previos:** En la ventana de 30 días anteriores a la línea de ruptura, se observa ausencia casi total de sismos de magnitud mayor a 5.
+* **Respuesta inmediata y saturación:** Tras un sismo grande, la probabilidad de otro evento cercano aumenta notablemente.
+* **Decaimiento temporal prolongado:** Conforme avanza el tiempo, la frecuencia disminuye drásticamente, confirmando el proceso de reajuste de la corteza.
+
+```{r}
+
+if (nrow(replicas) > 5) {
+  ggplot(replicas%>%
+	 filter(dias_desde_evento_principal>0), aes(x = dias_desde_evento_principal)) + 
+  geom_histogram(bins = 30, fill = "darkred", alpha = 0.7, color = "white") + 
+  labs(title = "Decaimiento temporal de réplicas") + 
+  tema
+}
+
+```
+
+**Interpretación:** El decaimiento rápido desde el día 0 que se aplana con el tiempo es consistente con la ley de Omori (frecuencia de réplicas ∝ 1/t).
+
+Vale la pena señalar que este análisis se basa en un solo evento principal (n=1 secuencia), así que es evidencia ilustrativa del fenómeno, no una generalización estadística robusta sobre "cómo se comportan las réplicas en México".
+
+# Regionalización y Perfiles Sísmicos (Pregunta Principal)
+
+El núcleo de este estudio radica en comprobar si la sismicidad en México puede agruparse en perfiles distinguibles mediante técnicas de aprendizaje no supervisado.
+
+## Diagnóstico Multivariado y Autocorrelación Espacial
+
+Antes de agrupar, validamos la estructura multivariada y la tendencia natural de agrupamiento geográfico.
+
+```{r, message=FALSE, warning=FALSE}
+GGally::ggpairs(df_num, title = "Matriz de dispersión", 
+                upper = list(continuous = wrap("cor", size = 4)), 
+                lower = list(continuous = wrap("points", alpha = 0.3, size = 0.5)))
+
+```
+
+La diagonal muestra la distribución univariada de cada variable (ya vista antes), los paneles inferiores las relaciones dos a dos, y los superiores el coeficiente de correlación — todo en una sola figura, útil para detectar de un vistazo relaciones no lineales que la matriz de correlación (que solo capta relaciones lineales) podría esconder.
+
+Estandarización requerida:
+
+```{r}
+tabla_escalas <- df_num %>% 
+  summarise(across(everything(), 
+                   list(min = ~min(.x), 
+                        max = ~max(.x), 
+                        rango = ~diff(range(.x)), 
+                        varianza = ~var(.x)))) %>% 
+  pivot_longer(everything(), names_to = c("variable", ".value"), names_pattern = "(.*)_(.*)")
+
+kable(tabla_escalas, digits = 2,
+      caption = "Escalas originales de las variables numéricas")
+
+```
+
+Como K-Means usa distancia euclidiana, si no se estandarizan las variables, la inmensa varianza de `depth` dominaría por completo el cálculo.
+
+Distancia de Mahalanobis:
+
+```{r}
+centro <- colMeans(df_num)
+covar  <- cov(df_num)
+d2_mahalanobis <- mahalanobis(df_num, center = centro, cov = covar)
+p_vars <- ncol(df_num)
+umbral_chi2 <- qchisq(0.975, df = p_vars)
+n_outliers_multi <- sum(d2_mahalanobis > umbral_chi2)
+
+cat(sprintf("Outliers multivariados (D² > chi2_0.975,%d = %.2f): %d de %d eventos (%.2f%%)\n",
+            p_vars, umbral_chi2, n_outliers_multi, nrow(df_num),
+            100 * n_outliers_multi / nrow(df_num)))
+
+```
+
+```{r}
+n_obs <- nrow(df_num)
+probs_qq <- (seq_len(n_obs) - 0.5) / n_obs
+q_teoricos <- qchisq(probs_qq, df = p_vars)
+
+ggplot(data.frame(teorico = q_teoricos, observado = sort(d2_mahalanobis)),
+       aes(x = teorico, y = observado)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, color = "firebrick", linetype = "dashed") +
+  labs(title = "Gráfico Q-Q Chi-cuadrado de distancias de Mahalanobis",
+       subtitle = "Puntos muy por encima de la línea roja = candidatos a outlier multivariado",
+       x = expression(paste("Cuantiles teóricos  ", chi[4]^2)),
+       y = expression(paste("D"^2, " de Mahalanobis observado"))) +
+  tema
+
+```
+
+> Nota: al igual que con los outliers univariados de `mag`, estos casos no se eliminan automáticamente — es muy posible que sean justo los eventos "atípicos" (p. ej. sismos profundos e intraplaca) que K-Means debe capturar como su propio perfil.
+
+Estadístico de Hopkins:
+
+Antes de correr K-Means vale la pena preguntar si los datos realmente tienen estructura de clústeres o si son esencialmente aleatorios/uniformes (en cuyo caso K-Means encontraría "grupos" aunque no existan). El estadístico de Hopkins compara la distancia de puntos reales a sus vecinos más cercanos contra la distancia de puntos simulados aleatoriamente en el mismo espacio.
+
+```{r warning=FALSE, message=FALSE}
+set.seed(123)
+df_escalado_prev <- scale(df_num)
+hopkins_res <- get_clust_tendency(df_escalado_prev, n = 100, graph = FALSE)
+cat(sprintf("Estadístico de Hopkins: %.3f\n", hopkins_res$hopkins_stat))
+
+```
+
+**Interpretación:** Valores cercanos a 1 indican fuerte tendencia a agruparse. Dado que la sismicidad se concentra en fronteras de placas, este número alto lo confirma cuantitativamente.
+
+Índice de Moran (Autocorrelación Espacial):
+
+La sismicidad es un fenómeno dictado por la geografía de las fallas tectónicas; por lo tanto, la ubicación de un evento incide directamente en la probabilidad de ocurrencia de otros en su vecindad. El Índice de Moran cuantifica esta autocorrelación espacial global, evaluando formalmente si los sismos cercanos en México tienden a compartir características similares (como frecuencia o liberación de energía) o si se distribuyen de manera espacialmente independiente. Validar una autocorrelación positiva es el puente analítico que garantiza que los clústeres posteriores representen zonas sismogénicas reales y no simples aglomeraciones matemáticas.
+
+```{r, message=FALSE}
+# 1. Asegurar que los datos sean un objeto espacial 
+df_sf <- st_as_sf(df, coords = c("longitude", "latitude"), crs = 4326)
+
+# 2. Extraer coordenadas y definir la matriz de pesos espaciales
+# Conectamos cada sismo con sus 5 vecinos más cercanos (puedes ajustar el valor de k)
+coords <- st_coordinates(df_sf)
+vecinos_knn <- knn2nb(knearneigh(coords, k = 5))
+
+# Convertir las conexiones en una matriz de pesos estandarizada
+pesos_espaciales <- nb2listw(vecinos_knn, style = "W")
+
+# 3. Aplicar la prueba del Índice de Moran Global a la Profundidad
+moran_profundidad <- moran.test(df$depth, pesos_espaciales)
+print(moran_profundidad)
+
+# 4. Aplicar la prueba a la Magnitud
+moran_magnitud <- moran.test(df$mag, pesos_espaciales)
+print(moran_magnitud)
+```
+
+* **Profundidad (`depth`):** Autocorrelación espacial muy fuerte (0.707). Los eventos superficiales están agrupados con superficiales, y profundos con profundos. Esto mapea matemáticamente el ángulo de inclinación de la subducción.
+* **Magnitud (`mag`):** Autocorrelación espacial muy débil (0.079). Es el reflejo exacto de la Ley de Gutenberg-Richter. Tener un vecino geográfico de magnitud alta no fuerza al siguiente sismo a ser de magnitud alta.
+
+```{r}
+# 1. Estandarizar la variable (necesario para centrar el gráfico en cero)
+profundidad_z <- scale(df$depth)
+
+# 2. Calcular el rezago espacial (el promedio de los vecinos)
+# Requiere el objeto 'pesos_espaciales' 
+lag_profundidad <- lag.listw(pesos_espaciales, profundidad_z)
+
+# 3. Crear un dataframe para la gráfica
+df_moran <- data.frame(
+  Profundidad_Z = as.numeric(profundidad_z),
+  Lag_Profundidad = as.numeric(lag_profundidad)
+)
+
+# 4. Construir el Moran Scatterplot con ggplot2
+plot_moran <- ggplot(df_moran, aes(x = Profundidad_Z, y = Lag_Profundidad)) +
+  geom_point(alpha = 0.5, color = "steelblue") +
+  # Línea de tendencia (la pendiente de esta línea es exactamente el Índice de Moran)
+  geom_smooth(method = "lm", color = "darkred", se = FALSE) +
+  # Líneas de referencia para dividir los cuadrantes
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Diagrama de Dispersión de Moran - Profundidad Sísmica",
+    subtitle = "Autocorrelación espacial de eventos (M ≥ 5)",
+    x = "Profundidad (Estandarizada)",
+    y = "Profundidad Promedio de los Vecinos (Rezago Espacial)"
+  ) +
+  # Agregamos anotaciones para los cuadrantes
+  annotate("text", x = 2, y = 3, label = "Alto-Alto (Clúster)", fontface = "italic", color = "gray30") +
+  annotate("text", x = -0.5, y = -2, label = "Bajo-Bajo (Clúster)", fontface = "italic", color = "gray30") +
+  tema
+
+print(plot_moran)
+
+```
+
+**Interpretación (Profundidad):** La línea de tendencia roja muestra una pendiente marcadamente ascendente. Esta inclinación confirma que a medida que aumenta la profundidad de un sismo, también lo hace la profundidad promedio de los sismos vecinos. Se observa el dominio del clúster "Bajo-Bajo" (sismos superficiales rodeados de superficiales en las zonas costeras) y la clara formación "Alto-Alto" (sismos profundos con profundos, trazando el hundimiento de la placa hacia el manto).
+
+```{r}
+# 1. Estandarizar la variable de magnitud
+magnitud_z <- scale(df$mag)
+
+# 2. Calcular el rezago espacial (la magnitud promedio de los vecinos)
+lag_magnitud <- lag.listw(pesos_espaciales, magnitud_z)
+
+# 3. Crear un dataframe para la gráfica
+df_moran_mag <- data.frame(
+  Magnitud_Z = as.numeric(magnitud_z),
+  Lag_Magnitud = as.numeric(lag_magnitud)
+)
+
+# 4. Construir el Moran Scatterplot con ggplot2
+plot_moran_mag <- ggplot(df_moran_mag, aes(x = Magnitud_Z, y = Lag_Magnitud)) +
+  geom_point(alpha = 0.5, color = "darkorange") +
+  # La pendiente de esta línea será casi plana, reflejando el 0.079
+  geom_smooth(method = "lm", color = "darkred", se = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Diagrama de Dispersión de Moran - Magnitud Sísmica",
+    subtitle = "Autocorrelación espacial de eventos (M ≥ 5)",
+    x = "Magnitud (Estandarizada)",
+    y = "Magnitud Promedio de los Vecinos (Rezago Espacial)"
+  ) +
+  tema
+
+print(plot_moran_mag)
+```
+
+**Interpretación (Magnitud):** La línea de tendencia es casi plana. Los sismos grandes están rodeados de pequeños, dispersos por la Ley de Gutenberg-Richter, comprobando estadísticamente la independencia espacial de la magnitud.
+
+A partir del análisis del Índice de Moran concluimos que la profundidad está fuertemente dictada por la geometría de las placas (justificando el agrupamiento espacial con K-Means), mientras que la magnitud opera de manera estadísticamente independiente según la Ley de Gutenberg-Richter, sin importar en qué punto exacto de la falla estemos.
+
+
+## Contexto Geográfico
+
+La disponibilidad de coordenadas espaciales permite mapear la distribución de los sismos en la República Mexicana. El siguiente mapa ilustra la ubicación de los epicentros para facilitar la identificación de las regiones con mayor sismicidad. Para hacer un énfasis explícito en la intensidad de los eventos registrados (M ≥ 5), la visualización codifica la magnitud a través de dos variables estéticas conjuntas: el tamaño y el gradiente de color de cada punto. De esta manera, los sismos cercanos al umbral inferior se representan con marcadores amarillos más pequeños, mientras que los eventos de mayor liberación de energía destacan de inmediato en la cartografía como círculos de mayor diámetro en tonos naranjas y rojos intensos
+
+
+```{r}
+world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+ggplot() +
+  geom_sf(data = world, fill = "gray92", color = "white") +
+  geom_point(data = df,
+             aes(x = longitude, y = latitude,
+                 color = mag, size = mag),
+             alpha = 0.45) +
+  scale_color_gradient(low = "yellow", high = "red", name = "Magnitud") +
+  scale_size_continuous(range = c(0.5, 4), guide = "none") +
+  coord_sf(xlim = c(-120, -85), ylim = c(13, 34)) +
+  labs(title = "Mapa de sismicidad — México y alrededores",
+       subtitle = "Cada punto = un evento M ≥ 5 (2015–presente)",
+       x = "Longitud", y = "Latitud") +
+  tema +
+  theme(panel.background = element_rect(fill = "aliceblue", color = NA))
+```
+
+Ahora graficaremos la República Mexicana y se superpondrá una capa de hexágonos, los cuales representarán la frecuencia absoluta (conteos) de sismos registrados en esas zonas
+
+```{r, message=FALSE, warning=FALSE}
+ggplot() +
+  geom_sf(data = world, fill = "grey85", color = "white") +
+  geom_hex(data = df, aes(x = longitude, y = latitude),
+           binwidth = c(0.7, 0.7), alpha = 0.6, color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(trans = "log10", name = "Num sismos",
+                       breaks = trans_breaks("log10", function(x) 10^x),
+                       labels=label_number(accuracy = 1)  #obliga a redondear la etiqueta sin decimales
+                       )+
+  
+  coord_sf(xlim = c(-120, -85), ylim = c(13, 34)) + 
+  tema+
+  theme(panel.background = element_rect(fill = "aliceblue", color = NA))+
+  labs(
+    title = "Densidad Espacial: Concentración de Eventos Sísmicos (M ≥ 5)",
+    subtitle = "Frecuencia absoluta agrupada por cuadrantes hexagonales",
+    x = "Longitud", 
+    y = "Latitud"
+  )
+
+
+```
+
+**Interpretación de mapas:** Observamos que la sismicidad no se distribuye de manera uniforme, sino en franjas alargadas, principalmente a lo largo de la costa del Pacífico, evidencia visual de una estructura lineal subyacente.
+
+Carga del shapefile de placas tectónicas:
+
+Los dos mapas anteriores muestran dónde ocurren los sismos, pero no *por qué* ocurren ahí. Para responder eso se incorpora el shapefile de límites de placas tectónicas (Bird, 2003 — `PB2002_boundaries`), descargado y descomprimido de la siguiente forma:
+
+
+```{r}
+# 1. Validación inicial: Buscar si el shapefile ya está extraído en algún lugar
+rutas_shp_existentes <- list.files(
+  path = ".",
+  pattern = "PB2002_boundaries\\.shp$",
+  recursive = TRUE,
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+if (length(rutas_shp_existentes) > 0) {
+  # Si el archivo ya existe, guardamos su ruta y omitimos el resto
+  ruta_final_shp <- rutas_shp_existentes[1]
+  message("El shapefile ya existe. Omitiendo búsqueda y descompresión del ZIP...")
+  
+} else {
+  # Si no existe, iniciamos el proceso de búsqueda y extracción
+  message("Shapefile no encontrado. Buscando y descomprimiendo el ZIP...")
+  
+  archivos_zip_encontrados <- list.files(
+    path = ".", 
+    pattern = "tectonicplates-master\\.zip$",
+    recursive = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+  
+  if (length(archivos_zip_encontrados) == 0) {
+    stop("No se encontró el ZIP ni el shapefile en ninguna subcarpeta.")
+  }
+  
+  archivo_zip <- archivos_zip_encontrados[1]
+  carpeta_destino <- "./datos_geologicos/"  # o asignarle el nombre que se desee
+  
+  if (!dir.exists(carpeta_destino)) {
+    unzip(
+      zipfile = archivo_zip,
+      exdir = carpeta_destino
+    )
+  }
+  
+  # Buscar el shapefile específico en la carpeta recién creada
+  rutas_shp_nuevas <- list.files(
+    path = carpeta_destino,
+    pattern = "PB2002_boundaries\\.shp$",          
+    recursive = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+  
+  if (length(rutas_shp_nuevas) == 0) {
+    stop("El ZIP se descomprimió, pero no contiene el archivo PB2002_boundaries.shp")
+  }
+  
+  ruta_final_shp <- rutas_shp_nuevas[1]
+}
+
+# 2. Leer el shapefile de las placas tectónicas usando la ruta definitiva
+limites_placas <- st_read(
+  ruta_final_shp,
+  quiet = TRUE
+)
+print("¡Shapefile de placas tectónicas cargado con éxito!")
+
+```
+
+
+```{r}
+# Mapa combinado: densidad de sismos + límites reales de placas tectónicas
+mapa_tectonico <- ggplot() +
+  # Capa 1: Mapa país (gris)
+  geom_sf(data = world, fill = "grey85", color = "white") +
+  # Capa 2: Los sismos (el agrupamiento hexagonal)
+  geom_hex(data = df, aes(x = longitude, y = latitude),
+           binwidth = c(0.7, 0.7), alpha = 0.75, color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "#FFF59D", high = "#800026", name = "No. de sismos") +
+  # Capa 3: Los límites de placas tectónicas
+  # Usamos geom_sf para graficar el shapefile
+  geom_sf(data = limites_placas, color = "#00BFFF", linewidth = 0.4, linetype = "dashed") +
+  coord_sf(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), expand = TRUE) +
+  annotate("text", x = -98,  y = 26, label = "Placa de\nNorteamérica", size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -114, y = 24, label = "Placa del\nPacífico",    size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -101, y = 15, label = "Placa de\nCocos",        size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -86.5,y = 14.5, label = "Placa del\nCaribe",      size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -112, y = 19, label = "Placa de\nRivera",       size = 4, fontface = "bold", color = "gray20") +
+  annotate("segment", x = -111, y = 19, xend = -108.5, yend = 20,
+           arrow = arrow(length = unit(0.2, "cm")), color = "gray20", linewidth = 0.5) +
+  labs(title = "Sismicidad y Límites de Placas Tectónicas en México",
+       subtitle = "Línea punteada azul = frontera de placa (Bird, 2003)",
+       x = "Longitud", y = "Latitud") +
+  tema +
+  theme(panel.background = element_rect(fill = "aliceblue", color = NA))
+
+print(mapa_tectonico)
+```
+
+Esta capa es la evidencia geológica directa que respalda la hipótesis del proyecto: si la sismicidad se agrupa en franjas alineadas con estos límites de placas, la variable `region_tectonica` (definida más abajo con cortes de longitud) y, más adelante, los clústeres de K-Means, deberían recuperar aproximadamente esta misma geometría — lo cual es un criterio de validación externo para el modelo, no solo estadístico.
+
+
+Perfiles sísmicos por región tectónica
+
+Se construirá una variable categórica que represente las capas tectónicas y se obtendrán los descriptivos de cada una de ellas.
+
+```{r}
+
+df <- df %>%
+  mutate(
+    region_tectonica = case_when(
+      longitude < -105                              ~ "Pacífico / BC",
+      longitude >= -105 & longitude < -98           ~ "Centro-Sur (Trinchera)",
+      longitude >= -98  & longitude < -92           ~ "Istmo / Golfo",
+      TRUE                                          ~ "Yucatán / Caribe"
+    ),
+    region_tectonica = factor(region_tectonica,
+                              levels = c("Pacífico / BC",
+                                         "Centro-Sur (Trinchera)",
+                                         "Istmo / Golfo",
+                                         "Yucatán / Caribe"))
+  )
+
+perfil_region <- df %>%
+  group_by(region_tectonica) %>%
+  summarise(
+    n_eventos       = n(),
+    mag_media       = round(mean(mag,   na.rm = TRUE), 2),
+    mag_mediana     = round(median(mag, na.rm = TRUE), 2),
+    mag_max         = max(mag,   na.rm = TRUE),
+    prof_media      = round(mean(depth, na.rm = TRUE), 1),
+    prof_mediana    = round(median(depth, na.rm = TRUE), 1),
+    pct_sismos_superficial = round(100 * mean(depth < 70, na.rm = TRUE), 1),
+    .groups = "drop"
+  ) %>%
+  mutate(pct_eventos = round(100 * n_eventos / sum(n_eventos), 1))
+
+kable(perfil_region, caption = "Perfil sísmico por región tectónica")
+```
+
+```{r, echo=FALSE}
+region_top_n <- perfil_region$region_tectonica[which.max(perfil_region$n_eventos)]
+region_top_mag <- perfil_region$region_tectonica[which.max(perfil_region$mag_media)]
+```
+
+**Interpretación:** `r region_top_n` concentra el mayor número de eventos, pero no es necesariamente la región con la magnitud media más alta (`r region_top_mag`) — es decir, "más activa" y "más severa en promedio" no son lo mismo, y confundirlas sería una sobreafirmación fácil de cometer aquí. Esta tabla es, en esencia, una versión simplificada y "a mano" (con 4 cortes de longitud arbitrarios) de lo que K-Means debería descubrir de forma más precisa y basada en los datos; sirve como punto de comparación para validar si el modelo encuentra algo razonablemente parecido o si corrige esta primera intuición.
+
+```{r}
+# Visualización de perfiles (paralelas)
+perfil_largo <- perfil_region %>%
+  select(region_tectonica, mag_media, prof_media, pct_sismos_superficial) %>%
+  pivot_longer(-region_tectonica, names_to = "metrica", values_to = "valor")
+
+ggplot(perfil_largo, aes(x = metrica, y = valor,
+                         group = region_tectonica,
+                         color = region_tectonica)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  labs(title = "Perfiles sísmicos comparados por región",
+       x = NULL, y = "Valor",
+       color = "Región") +
+  tema
+
+```
+
+
+```{r}
+# Distribución de magnitudes por región
+ggplot(df, aes(x = region_tectonica, y = mag, fill = region_tectonica)) +
+  geom_violin(alpha = 0.5) +
+  geom_boxplot(width = 0.15, outlier.size = 0.8) +
+  labs(title = "Distribución de magnitud por región tectónica",
+       x = NULL, y = "Magnitud") +
+  tema + theme(legend.position = "none")
+```
+
+**Interpretación:** si las formas de los violines se parecen mucho entre regiones, la diferencia principal entre ellas es de frecuencia (cuántos sismos) más que de severidad (qué tan grandes); si en cambio alguna región tiene una forma claramente más ancha o desplazada hacia magnitudes altas, esa región amerita atención particular en la discusión de riesgo — más allá de si es o no la "más activa".
+
+
+
+## Aplicación de K-Means y Selección de k
+
+
+```{r}
+df_kmeans <- df %>% select(longitude, latitude, depth, mag) %>% na.omit()
+df_escalado <- scale(df_kmeans)
+
+```
+
+Método del Codo
+
+```{r}
+
+# Generar la gráfica del método del codo evaluando hasta 10 posibles clústeres
+grafica_codo <- fviz_nbclust(df_escalado, kmeans, method = "wss", k.max = 10) +
+  labs(
+    title = "Método del Codo para determinar k óptimo",
+    subtitle = "Evaluación de perfiles sísmicos",
+    x = "Número de Clústeres (k)",
+    y = "Suma de Cuadrados Intra-Clúster (WSS)"
+  ) +
+  tema
+
+# Mostrar la gráfica
+print(grafica_codo)
+```
+
+
+Score de la silueta
+
+```{r}
+# Generar la gráfica del método de la Silueta
+grafica_silueta <- fviz_nbclust(df_escalado, kmeans, method = "silhouette", k.max = 10) +
+  labs(
+    title = "Método de la Silueta para determinar k óptimo",
+    subtitle = "Evaluación de la cohesión y separación de los perfiles",
+    x = "Número de Clústeres (k)",
+    y = "Score de la silueta"
+  ) +
+  tema
+
+# Mostrar la gráfica
+print(grafica_silueta)
+```
+
+
+**Determinación del número óptimo de clústeres ($k$):**
+El gráfico del codo mostró un punto de inflexión en $k=4$. La métrica de la silueta alcanzó su pico máximo global ($> 0.44$) exactamente en $k=4$. Esto justifica metodológicamente la partición del territorio en cuatro perfiles.
+
+
+
+```{r}
+set.seed(123)
+modelo_kmeans <- kmeans(df_escalado, centers = 4, nstart = 25)
+df$cluster <- as.factor(modelo_kmeans$cluster)
+
+# Ver el tamaño de cada clúster
+print(table(df$cluster))
+
+
+```
+
+
+```{r}
+# Graficar los clústeres en el mapa de México
+mapa_clusters <- ggplot() +
+  # Mapa base
+  geom_sf(data = world, fill = "grey85", color = "white") +
+  # Puntos coloreados por clúster
+  geom_point(data = df, aes(x = longitude, y = latitude, color = cluster),
+             alpha = 0.7, size = 1.5) +
+  scale_color_brewer(palette = "Set1", name = "Perfil Sísmico") +
+  geom_sf(data = limites_placas, color = "#00BFFF", linewidth = 0.4, linetype = "dashed") +
+  coord_sf(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), expand = TRUE) +
+  annotate("text", x = -98,  y = 26, label = "Placa de\nNorteamérica", size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -114, y = 24, label = "Placa del\nPacífico",    size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -101, y = 15, label = "Placa de\nCocos",        size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -86.5,y = 14.5, label = "Placa del\nCaribe",      size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -112, y = 19, label = "Placa de\nRivera",       size = 4, fontface = "bold", color = "gray20") +
+  annotate("segment", x = -111, y = 19, xend = -108.5, yend = 20,
+           arrow = arrow(length = unit(0.2, "cm")), color = "gray20", linewidth = 0.5) +
+  
+  tema +
+  labs(
+    title = "Regionalización de Perfiles Sísmicos",
+    subtitle = "Agrupamiento mediante K-Means (k=4)",
+    x = "Longitud", 
+    y = "Latitud"
+  ) +
+  theme(
+    panel.background = element_rect(fill = "aliceblue", color = NA),
+    legend.position = "right"
+  )
+
+# Mostrar el mapa
+print(mapa_clusters)
+
+```
+
+**Conclusiones geológicas de la regionalización (K-Means):**
+
+* **Régimen Tectónico del Noroeste (Clúster 3 - Verde):** Traza de manera exclusiva el límite entre la Placa del Pacífico y la de Norteamérica a lo largo de Baja California (fallas transformantes).
+* **Zona de Subducción Principal (Clúster 4 - Morado):** Mapea la frontera convergente (Trinchera Mesoamericana) donde la Placa de Cocos se hunde.
+* **Sismicidad Interior o Profunda (Clúster 1 - Rojo):** Se concentra tierra adentro en el Istmo de Tehuantepec, sugiriendo rupturas de mayor profundidad cuando la placa ya ha descendido.
+* **Eventos Anómalos (Clúster 2 - Azul):** Disperso sobre las fronteras, agrupando los sismos más raros y destructivos por su perfil físico extremo en lugar de su geografía.
+
+
+## Modelo Alternativo de Contraste (DBSCAN)
+
+
+```{r}
+
+# 1. Convertir lat/lon a un sistema de coordenadas proyectado (UTM)
+# EPSG:4326 es WGS84 (grados). EPSG:32614 es UTM Zona 14N (cubre gran parte de México central).
+df_limpio <- df %>% dplyr::select(longitude, latitude, depth, mag) %>% na.omit()
+
+df_sf <- df_limpio %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(crs = 32614) # Transforma grados a metros planos
+
+# 2. Extraer coordenadas espaciales y convertirlas a kilómetros
+coords <- st_coordinates(df_sf) / 1000
+
+df_espacial <- data.frame(
+  X_km = coords[, "X"],
+  Y_km = coords[, "Y"],
+  depth_km = df_limpio$depth # El USGS reporta la profundidad directamente en km
+)
+```
+
+
+
+```{r}
+dlookr::diagnose_numeric(df_espacial)
+```
+
+
+Aunque las variables de interés están en kilometros, los rangos son muy diferentes, se observa principalmente en la variable profundidad, por lo que las variables se escalarán.
+
+
+```{r}
+df_escalado <- scale(df_espacial)
+```
+
+
+Elección del hiperparámetro `minPts` 
+
+Se recomienda que este hiperparámetro sea `minPts=2*dim`
+
+```{r}
+minPts_dbscan <-2 * ncol(df_escalado)
+
+```
+
+
+Elección del hiperparámetro `eps`.
+
+```{r}
+
+# 3. Calcular la curva k-NN usando distancias físicas reales 
+# Ahora el eje Y de la gráfica estará directamente en kilómetros físicos
+kNNdistplot(df_escalado, k = minPts_dbscan)
+abline(h = c(0.25, 0.5), col = "red", lty = 2, lwd = 0.5)
+
+```
+
+De la gráfica observamos que el epsilon adecuado puede estar entre 0.25 y 0.5. A continuación evaluaremos el score de la silueta en este rango de datos.
+
+
+```{r}
+
+# 1. Definir los valores de epsilon candidatos extraídos de la gráfica anterior
+eps_valores <- c(0.25, 0.30, 0.35, 0.40, 0.45, 0.50)
+resultados_silueta <- numeric(length(eps_valores))
+
+# 2. Iterar sobre cada escenario de epsilon
+for (i in seq_along(eps_valores)) {
+  
+  # Ejecutar el modelo (asumiendo minPts = 6)
+  modelo <- dbscan(df_escalado, eps = eps_valores[i], minPts = 6)
+  clusters <- modelo$cluster
+  
+  # Identificar solo los puntos que pertenecen a un clúster válido (excluir ruido = 0)
+  indices_agrupados <- which(clusters > 0)
+  
+  # La silueta requiere al menos 2 clústeres para poder calcular distancias intra/inter clúster
+  if (length(unique(clusters[indices_agrupados])) > 1) {
+    
+    # Recalcular las distancias solo para los puntos válidos
+    dist_validas <- dist(df_escalado[indices_agrupados, ])
+    
+    # Calcular el coeficiente de silueta
+    sil <- silhouette(clusters[indices_agrupados], dist_validas)
+    
+    # Extraer el promedio del ancho de la silueta para este epsilon
+    resultados_silueta[i] <- mean(sil[, "sil_width"])
+    
+  } else {
+    resultados_silueta[i] <- NA # Penalizar si el modelo fusiona todo en un solo clúster
+  }
+}
+
+# 3. Consolidar los resultados para comparar
+df_evaluacion <- data.frame(
+  Epsilon = eps_valores, 
+  Silueta_Promedio = resultados_silueta
+)
+
+print(df_evaluacion)
+```
+
+
+
+```{r}
+
+modelo_035 <- dbscan::dbscan(df_escalado, eps = 0.35, minPts = 8)
+
+
+modelo_045 <- dbscan::dbscan(df_escalado, eps = 0.45, minPts = 8)
+
+# Agregar los resultados al dataframe original para su análisis
+df_resultados <- df_limpio %>%
+  mutate(
+    cluster_035 = as.factor(modelo_035$cluster),
+    cluster_045 = as.factor(modelo_045$cluster)
+  )
+```
+
+```{r}
+table(df_resultados$cluster_035, useNA = "always")
+```
+
+```{r}
+table(df_resultados$cluster_045, useNA = "always")
+```
+
+Visualizar clústeres con epsilon=0.35
+
+```{r}
+
+# Graficar los clústeres en el mapa de México
+mapa_clusters_dbscan_eps035 <- ggplot() +
+  # Mapa base
+  geom_sf(data = world, fill = "grey85", color = "white") +
+  # Puntos coloreados por clúster
+  geom_point(data = df_resultados, aes(x = longitude, y = latitude, color = cluster_035),
+             alpha = 0.7, size = 1.5) +
+  scale_color_brewer(palette = "Set1", name = "Perfil Sísmico") +
+  geom_sf(data = limites_placas, color = "#00BFFF", linewidth = 0.4, linetype = "dashed") +
+  coord_sf(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), expand = TRUE) +
+  annotate("text", x = -98,  y = 26, label = "Placa de\nNorteamérica", size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -114, y = 24, label = "Placa del\nPacífico",    size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -101, y = 15, label = "Placa de\nCocos",        size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -86.5,y = 14.5, label = "Placa del\nCaribe",      size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -112, y = 19, label = "Placa de\nRivera",       size = 4, fontface = "bold", color = "gray20") +
+  annotate("segment", x = -111, y = 19, xend = -108.5, yend = 20,
+           arrow = arrow(length = unit(0.2, "cm")), color = "gray20", linewidth = 0.5) +
+  
+  tema +
+  labs(
+    title = "Regionalización de Perfiles Sísmicos",
+    subtitle = "Agrupamiento mediante DBSCAN (epsilon=0.35)",
+    x = "Longitud", 
+    y = "Latitud"
+  ) +
+  theme(
+    panel.background = element_rect(fill = "aliceblue", color = NA),
+    legend.position = "right"
+  )
+
+# Mostrar el mapa
+print(mapa_clusters_dbscan_eps035)
+
+
+```
+
+Visualizar clústeres con epsilon=0.45
+
+```{r}
+# Graficar los clústeres en el mapa de México
+mapa_clusters_dbscan_eps045 <- ggplot() +
+  # Mapa base
+  geom_sf(data = world, fill = "grey85", color = "white") +
+  # Puntos coloreados por clúster
+  geom_point(data = df_resultados, aes(x = longitude, y = latitude, color = cluster_045),
+             alpha = 0.7, size = 1.5) +
+  scale_color_brewer(palette = "Set1", name = "Perfil Sísmico") +
+  geom_sf(data = limites_placas, color = "#00BFFF", linewidth = 0.4, linetype = "dashed") +
+  coord_sf(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), expand = TRUE) +
+  annotate("text", x = -98,  y = 26, label = "Placa de\nNorteamérica", size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -114, y = 24, label = "Placa del\nPacífico",    size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -101, y = 15, label = "Placa de\nCocos",        size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -86.5,y = 14.5, label = "Placa del\nCaribe",      size = 4, fontface = "bold", color = "gray20") +
+  annotate("text", x = -112, y = 19, label = "Placa de\nRivera",       size = 4, fontface = "bold", color = "gray20") +
+  annotate("segment", x = -111, y = 19, xend = -108.5, yend = 20,
+           arrow = arrow(length = unit(0.2, "cm")), color = "gray20", linewidth = 0.5) +
+  
+  tema +
+  labs(
+    title = "Regionalización de Perfiles Sísmicos",
+    subtitle = "Agrupamiento mediante DBSCAN (epsilon=0.45)",
+    x = "Longitud", 
+    y = "Latitud"
+  ) +
+  theme(
+    panel.background = element_rect(fill = "aliceblue", color = NA),
+    legend.position = "right"
+  )
+
+# Mostrar el mapa
+print(mapa_clusters_dbscan_eps045)
+
+
+```
+
+Conclusiones del Análisis con DBSCAN:
+
+Al evaluar los distintos escenarios (variando el parámetro epsilon), se observaron los siguientes comportamientos en el agrupamiento:
+
+- Identificación de ruido espacial: Las observaciones con etiqueta 0 corresponden a sismos que el algoritmo clasifica como outliers o ruido por no alcanzar la densidad mínima requerida.
+
+- Sesgo hacia la sismicidad superficial: Los sismos que registran mayor profundidad son sistemáticamente excluidos de los clústeres principales y marcados como outliers. 
+
+- Agrupación macrorregional: En todos los escenarios sobresalen dos grandes clústeres que coinciden anatómicamente con el límite de la Placa del Pacífico (noroeste) y la trinchera de subducción de las placas de Rivera y Cocos (sur).
+
+- Dominancia bidimensional: A pesar de haber incluido y escalado la profundidad como variable, los resultados de DBSCAN mantienen un sesgo marcadamente geográfico (latitud/longitud), dictado por la altísima densidad de epicentros someros.
+
+Decisión Final:
+
+Estas observaciones evidencian que, si bien DBSCAN es útil para trazar las franjas de mayor concentración sísmica, presenta limitaciones para modelar la tridimensionalidad del fenómeno geológico. Por ello, para la regionalización final de los perfiles sísmicos en México, se seleccionó el modelo K-Means ($k=4$). Esta decisión se fundamenta en su superioridad para integrar de manera equilibrada las dimensiones espaciales y físicas del catálogo. Mientras que DBSCAN tendió a subrepresentar la sismicidad intraplaca profunda clasificándola como ruido debido a su menor frecuencia espacial, K-Means garantizó una cobertura total, asignando cada evento a un perfil tectónico válido. Además, demostró una mayor sensibilidad multivariada: no solo delineó con precisión las fronteras divergentes y de subducción, sino que logró aislar matemáticamente los sismos de mayor profundidad (Clúster 1) y capturar la varianza de la energía liberada agrupando los eventos de mayor magnitud (Clúster 2).
+
+
+## Evaluación de Clústeres
+
+```{r}
+
+ggplot(df, aes(x = cluster, y = depth, fill = cluster)) +
+  geom_boxplot(alpha = 0.8, outlier.color = "gray40", outlier.size = 1) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Distribución de la Profundidad por Clúster",
+    subtitle = "Comprobación visual de los perfiles sísmicos",
+    x = "Clúster (Perfil Tectónico)", 
+    y = "Profundidad (km)"
+  ) +
+  tema +
+  theme(legend.position = "none") 
+```
+
+
+```{r}
+
+# Asegurar que la variable cluster sea un factor (categórica)
+df$cluster <- as.factor(df$cluster)
+
+# ==========================================
+# ANÁLISIS DE LA PROFUNDIDAD
+# ==========================================
+
+# Prueba global de Kruskal-Wallis
+kw_profundidad <- kruskal.test(depth ~ cluster, data = df)
+p_value_kw_prof <- kw_profundidad$p.value
+print("--- Kruskal-Wallis: Profundidad ---")
+print(kw_profundidad)
+
+# Prueba Post-hoc (¿Qué clústeres son distintos entre sí?)
+posthoc_profundidad <- pairwise.wilcox.test(
+  df$depth, 
+  df$cluster, 
+  p.adjust.method = "bonferroni"
+)
+print("--- Diferencias por pares (Profundidad) ---")
+print(posthoc_profundidad$p.value)
+
+```
+
+
+**Interpretación de Profundidad por Clúster:**
+La prueba global de Kruskal-Wallis (`r p_value_kw_prof`) confirma de manera contundente que la profundidad no se distribuye al azar entre los grupos; el algoritmo K-Means logró identificar perfiles geofísicos reales y diferenciados.
+El Clúster 1 aísla la sismicidad profunda (estadísticamente distinto a los demás, p≈0). El Clúster 3 define un régimen ultra-superficial y rígido comprimido a ~10km. Los Clústeres 2 y 4 son idénticos en profundidad (p=1.0000), ambos representan fricción costera superficial, demostrando que el algoritmo los separó por latitud/longitud o magnitud.
+
+
+```{r}
+ggplot(df, aes(x = cluster, y = mag, fill = cluster)) +
+  geom_boxplot(alpha = 0.8, outlier.color = "gray40", outlier.size = 1) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Distribución de la Magnitud por Clúster",
+    subtitle = "Comprobación visual de los perfiles sísmicos",
+    x = "Clúster (Perfil Tectónico)", 
+    y = "Magnitud"
+  ) +
+  tema +
+  theme(legend.position = "none") 
+```
+
+
+```{r}
+# ==========================================
+# ANÁLISIS DE LA MAGNITUD
+# ==========================================
+
+# 4. Prueba global de Kruskal-Wallis
+kw_magnitud <- kruskal.test(mag ~ cluster, data = df)
+p_value_kw_mag <- kw_magnitud$p.value
+print("--- Kruskal-Wallis: Magnitud ---")
+print(kw_magnitud)
+
+# 5. Prueba Post-hoc
+posthoc_magnitud <- pairwise.wilcox.test(
+  df$mag, 
+  df$cluster, 
+  p.adjust.method = "bonferroni"
+)
+print("--- Diferencias por pares (Magnitud) ---")
+print(posthoc_magnitud$p.value)
+```
+
+**Interpretación de Magnitud por Clúster:**
+El Clúster 2 concentra los eventos extremos y macrosismos, estadísticamente diferente a todos los demás (p≈0). El Clúster 4 es el grupo con la mediana de magnitud más baja (alrededor de 5.2). Los Clústeres 1 y 3 tienen magnitudes medias estadísticamente idénticas (p=1.0000) aunque ocurran en zonas tectónicas muy distintas. Esto demuestra que K-Means usó la magnitud para aislar los sismos extremos en el Clúster 2.
+
+# Conclusiones y Resumen Consolidado
+
+```{r}
+resumen_consolidado <- tibble(
+  metrica = c("Total de eventos", "Periodo cubierto", "Magnitud promedio", "Magnitud mediana", "Profundidad promedio (km)"),
+  valor = c(nrow(df), paste(min(df$anio_evento, na.rm = TRUE), "-", max(df$anio_evento, na.rm = TRUE)), round(mean(df$mag, na.rm = TRUE), 2), round(median(df$mag, na.rm = TRUE), 2), round(mean(df$depth, na.rm = TRUE), 2))
+)
+kable(resumen_consolidado)
+```
+
+
+
+```{r}
+resumen_final <- tibble(
+  Hallazgo = c(
+    "Correlación prof ↔ mag (Pearson)",
+    "Correlación prof ↔ mag (Spearman)",
+    "b-value (Gutenberg-Richter)",
+    "R² ajuste G-R",
+    "Región más activa",
+    "Región con mayor M media",
+    "% eventos superficiales",
+    "Réplicas del evento principal",
+    "Estadístico de Hopkins (tendencia de clustering)",
+    "Outliers multivariados (Mahalanobis, chi2 97.5%)"
+  ),
+  Valor = c(
+    round(cor(df_num$depth, df_num$mag), 3),
+    round(cor(df_num$depth, df_num$mag, method = "spearman"), 3),
+    round(b_value, 3),
+    round(summary(gr_fit)$r.squared, 3),
+    perfil_region$region_tectonica[which.max(perfil_region$n_eventos)],
+    perfil_region$region_tectonica[which.max(perfil_region$mag_media)],
+    paste0(round(100 * mean(df$depth < 70, na.rm = TRUE), 1), "%"),
+    as.character(nrow(replicas)),
+    round(hopkins_res$hopkins_stat, 3),
+    paste0(n_outliers_multi, " (", round(100 * n_outliers_multi / nrow(df_num), 1), "%)")
+  )
+)
+kable(resumen_final, caption = "Resumen ejecutivo del análisis descriptivo")
+
+```
+
+**Interpretación de Cierre:** Esta tabla reúne la evidencia que responde a las preguntas secundarias del proyecto (correlación profundidad-magnitud, regiones diferenciadas, patrones temporales, y la ley frecuencia-magnitud), y los diagnósticos que justificaron metodológicamente el modelado espacial. El estadístico de Hopkins comprobó la estructura de agrupamiento real, y el análisis K-Means logró segmentar con éxito el catálogo en regímenes tectónicos estadísticamente fundamentados.
+
+# Limitaciones, Posibles Extensiones y Conclusión General
+
+Entre las principales limitaciones del proyecto destacan que el análisis se restringe a sismos $M \ge 5$ (sin generalizarse a la microsismicidad), que el bounding box es una conveniencia geográfica y no una frontera tectónica real, que no puede descartarse un sesgo instrumental en la tendencia temporal observada y que la secuencia de réplicas se basa en un único evento principal (n=1); como posibles extensiones se sugiere evaluar algoritmos de agrupamiento jerárquico, afinar la parametrización espacial de DBSCAN para distintas regiones tectónicas, repetir el análisis de réplicas sobre varios eventos M≥7 en vez de uno solo, ajustar un modelo de series de tiempo para pronosticar frecuencia futura, incorporar variables de calidad de detección del catálogo (gap, nst, rms) y cruzar los perfiles sísmicos con datos de densidad poblacional para pasar de actividad a riesgo; y en conclusión general, la evidencia acumulada —el Estadístico de Hopkins (1) confirmando estructura real de agrupamiento, el Índice de Moran mostrando autocorrelación fuerte en profundidad (0.707) pero casi nula en magnitud (0.079), los cuatro perfiles de K-Means validados estadísticamente con Kruskal-Wallis y post-hoc, la exitosa implementación de DBSCAN que superó la limitación de asumir clústeres esféricos al adaptarse a la geometría lineal de las fallas, la independencia entre profundidad y magnitud (Pearson ≈ 0.01), y el ajuste de Gutenberg-Richter (b = 0.86, R² = 0.988)— confirma que la sismicidad de alto impacto en México sí se distribuye de forma heterogénea y agrupable en perfiles distinguibles matemáticamente, aunque el alcance de esta conclusión queda acotado por las limitaciones señaladas.
+
+# Bibliografía
+
+Bird, P. (2003). An updated digital model of plate boundaries. *Geochemistry, Geophysics, Geosystems*, 4(3). Obtenido del repositorio GitHub: https://github.com/fraxen/tectonicplates/tree/master
+
+R Core Team. (2026). *R: A language and environment for statistical computing*. R Foundation for Statistical Computing, Vienna, Austria.
+
+Servicio Sismológico Nacional (SSN). (2021). *Catálogo de sismos*. Instituto de Geofísica, Universidad Nacional Autónoma de México, México. URL: http://www.ssn.unam.mx
+
+USGS (U.S. Geological Survey). (2026). *Earthquake Catalog API*. Earthquake Hazards Program. Obtenido de https://earthquake.usgs.gov/fdsnws/event/1/
+
+Servicio Sismológico Nacional (SSN) *Evolución de la tectónica en México* URL: https://www.sgm.gob.mx/Web/MuseoVirtual/Riesgos-geologicos/Evolucion-tectonica-Mexico.html
+
+Terremoto de 2017 quebró placa tectónica en dos: nationalgeogra.
+URL: https://www.nationalgeographicla.com/medio-ambiente/2018/10/mexico-terremoto-de-2017-quebro-placa-tectonica-en-dos
+
+Erich Schubert, Jörg Sander, Martin Ester, Hans-Peter Kriegel, and Xiaowei Xu. 2017. DBSCAN Revisited, Revisited: Why and How You Should (Still) Use DBSCAN. ACM Trans. Database Syst. 42, 3, Article 19 (July 2017), 21 pages.
+https://doi.org/10.1145/3068335
+
+Vijay, R.K., Nanda, S.J. & Sharma, A. A review on clustering algorithms for spatiotemporal seismicity analysis. Artif Intell Rev 58, 231 (2025). https://doi.org/10.1007/s10462-025-11229-3
+
