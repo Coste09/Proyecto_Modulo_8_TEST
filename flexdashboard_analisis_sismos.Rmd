@@ -46,7 +46,7 @@ anios <- 2015:2026
 magnitud_minima <- 5
 
 
-datos <- read.csv("datos_sismos_2015_2026.csv")
+datos <- read.csv("datos/datos_sismos_2015_2026.csv")
 
 df <- datos %>%
   filter(type == "earthquake") %>%
@@ -63,71 +63,9 @@ df <- datos %>%
     )
   )
 
-#=================
-# Shape files (placas tectónicas)
-# 1. Validación inicial: Buscar si el shapefile ya está extraído en algún lugar
-rutas_shp_existentes <- list.files(
-  path = ".",
-  pattern = "PB2002_boundaries\\.shp$",
-  recursive = TRUE,
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-if (length(rutas_shp_existentes) > 0) {
-  # Si el archivo ya existe, guardamos su ruta y omitimos el resto
-  ruta_final_shp <- rutas_shp_existentes[1]
-  message("El shapefile ya existe. Omitiendo búsqueda y descompresión del ZIP...")
-  
-} else {
-  # Si no existe, iniciamos el proceso de búsqueda y extracción
-  message("Shapefile no encontrado. Buscando y descomprimiendo el ZIP...")
-  
-  archivos_zip_encontrados <- list.files(
-    path = ".", 
-    pattern = "tectonicplates-master\\.zip$",
-    recursive = TRUE,
-    full.names = TRUE,
-    ignore.case = TRUE
-  )
-  
-  if (length(archivos_zip_encontrados) == 0) {
-    stop("No se encontró el ZIP ni el shapefile en ninguna subcarpeta.")
-  }
-  
-  archivo_zip <- archivos_zip_encontrados[1]
-  carpeta_destino <- "./datos_geologicos/"  # o asignarle el nombre que se desee
-  
-  if (!dir.exists(carpeta_destino)) {
-    unzip(
-      zipfile = archivo_zip,
-      exdir = carpeta_destino
-    )
-  }
-  
-  # Buscar el shapefile específico en la carpeta recién creada
-  rutas_shp_nuevas <- list.files(
-    path = carpeta_destino,
-    pattern = "PB2002_boundaries\\.shp$",          
-    recursive = TRUE,
-    full.names = TRUE,
-    ignore.case = TRUE
-  )
-  
-  if (length(rutas_shp_nuevas) == 0) {
-    stop("El ZIP se descomprimió, pero no contiene el archivo PB2002_boundaries.shp")
-  }
-  
-  ruta_final_shp <- rutas_shp_nuevas[1]
-}
-
-# 2. Leer el shapefile de las placas tectónicas usando la ruta definitiva
-limites_placas <- st_read(
-  ruta_final_shp,
-  quiet = TRUE
-)
-#print("¡Shapefile de placas tectónicas cargado con éxito!")
-#======================================================================
+# Lectura placas tectónicas
+limites_placas <- st_read("datos/tectonicplates-master/PB2002_boundaries.shp",
+                          quiet=TRUE)
 
 
 # Cálculo de variables globales para Value Boxes

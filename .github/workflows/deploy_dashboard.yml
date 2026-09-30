@@ -1,0 +1,43 @@
+name: Deploy Dashboard to GitHub Pages
+
+# Esto indica que la acción se ejecutará cada vez que haya código nuevo en main
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+
+      - name: Instalar Pandoc (necesario para compilar Rmd)
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Instalar librerías de R
+        run: |
+          install.packages(c("rmarkdown", "flexdashboard", "leaflet", "tidyverse",
+          "plotly", "dlookr", "lubridate", "knitr", "sf", "factoextra", "randtests",
+          "spdep", "scales", "geosphere", "patchwork", "Kendall"))
+        shell: Rscript {0}
+
+      - name: Compilar el dashboard a HTML
+        run: |
+          rmarkdown::render("flexdashboard_analisis_sismos.Rmd", output_file = "index.html")
+        shell: Rscript {0}
+
+      - name: Desplegar en GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          publish_branch: gh-pages
