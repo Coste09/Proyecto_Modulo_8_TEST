@@ -23,6 +23,11 @@ jobs:
       - name: Instalar Pandoc (necesario para compilar Rmd)
         uses: r-lib/actions/setup-pandoc@v2
 
+      - name: Instalar dependencias espaciales de Ubuntu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudunits2-dev libgdal-dev libgeos-dev libproj-dev
+
       - name: Instalar librerías de R
         run: |
           install.packages(c("rmarkdown", "flexdashboard", "leaflet", "tidyverse",
