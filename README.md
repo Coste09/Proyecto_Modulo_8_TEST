@@ -25,3 +25,5 @@ Este repositorio alberga el código y los datos utilizados para desarrollar el a
 * José Fortino López López
 * Karla Valeria Loyola Alarcón
 * Luis Antonio Sánchez Montalvo
+
+## Uso de IA: Para el desarrollo de este proyecto se utilizaron herramientas de IA generativa como apoyo en actividades de programación, depuración y análisis. Las decisiones metodológicas, validación de resultados e interpretación son responsabilidad del equipo.
