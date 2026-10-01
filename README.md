@@ -12,6 +12,9 @@ Este repositorio alberga el código y los datos utilizados para desarrollar el a
 * **Modelado:** `kmeans` (Aprendizaje no supervisado)
 * **Automatización (CI/CD):** GitHub Actions y GitHub Pages
 
+## Uso de IA
+Para el desarrollo de este proyecto se utilizaron herramientas de IA generativa como apoyo en actividades de programación, depuración y análisis. Las decisiones metodológicas, validación de resultados e interpretación son responsabilidad del equipo.  
+
 ## Estructura del Repositorio
 * `/datos/`: Contiene el dataset principal (`datos_sismos_2015_2026.csv`) y los *shapefiles* de las placas tectónicas.
 * `/.github/workflows/`: Archivo de configuración YAML que orquesta el servidor de Ubuntu y el despliegue automático.
@@ -26,5 +29,4 @@ Este repositorio alberga el código y los datos utilizados para desarrollar el a
 * Karla Valeria Loyola Alarcón
 * Luis Antonio Sánchez Montalvo
 
-## Uso de IA
-Para el desarrollo de este proyecto se utilizaron herramientas de IA generativa como apoyo en actividades de programación, depuración y análisis. Las decisiones metodológicas, validación de resultados e interpretación son responsabilidad del equipo.
+
