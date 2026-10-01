@@ -20,7 +20,7 @@ Para el desarrollo de este proyecto se utilizaron herramientas de IA generativa 
 * `/.github/workflows/`: Archivo de configuración YAML que orquesta el servidor de Ubuntu y el despliegue automático.
 * `flexdashboard_analisis_sismos.Rmd`: Código fuente principal que renderiza el visualizador.
 * `analisis_sismos.Rmd`: Contiene todo el análisis de datos
-* `FALTA AGREGAR EL HTML que se llamará "reporte...html"
+
 
 ## Equipo de Trabajo
 * Araceli Yolanda Cruz Cruz
