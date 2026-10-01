@@ -26,7 +26,6 @@ Para el desarrollo de este proyecto se utilizaron herramientas de IA generativa 
 * Araceli Yolanda Cruz Cruz
 * Alberto González Padilla
 * José Fortino López López
-* Karla Valeria Loyola Alarcón
 * Luis Antonio Sánchez Montalvo
 
 
