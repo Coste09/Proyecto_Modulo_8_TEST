@@ -1,6 +1,6 @@
 ---
 title: "Análisis Espacial y Agrupamiento de la Sismicidad de Alto Impacto en México (Magnitud>=5)"
-author: ["Araceli Yolanda Cruz Cruz", "Alberto González Padilla", "José Fortino López López", "Karla Valeria Loyola Alarcón", "Luis Antonio Sánchez Montalvo"]
+author: ["Araceli Yolanda Cruz Cruz", "Alberto González Padilla", "José Fortino López López", "Luis Antonio Sánchez Montalvo"]
 date: "`r Sys.Date()`"
 output:
   html_document:
