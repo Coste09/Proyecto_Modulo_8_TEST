@@ -19,6 +19,7 @@ Para el desarrollo de este proyecto se utilizaron herramientas de IA generativa 
 * `/datos/`: Contiene el dataset principal (`datos_sismos_2015_2026.csv`) y los *shapefiles* de las placas tectónicas.
 * `/.github/workflows/`: Archivo de configuración YAML que orquesta el servidor de Ubuntu y el despliegue automático.
 * `flexdashboard_analisis_sismos.Rmd`: Código fuente principal que renderiza el visualizador.
+* `reporte_analisis_sismos.html` : Reporte del análisis en formato HTML 
 * `analisis_sismos.Rmd`: Contiene todo el análisis de datos
 
 
