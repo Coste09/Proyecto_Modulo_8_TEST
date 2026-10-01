@@ -1,5 +1,5 @@
 ---
-title: "Análisis de Sismicidad en México"
+title: "Análisis de Sismicidad en México (Magnitud>=5)"
 output: 
   flexdashboard::flex_dashboard:
     orientation: rows
@@ -310,7 +310,7 @@ mapa_clusters_leaflet
 p_prof_cluster <- ggplot(df, aes(x = cluster, y = depth, fill = cluster)) +
   geom_boxplot(alpha = 0.8, outlier.color = "gray40", outlier.size = 1) +
   scale_fill_brewer(palette = "Set1") +
-  labs(x = "Clúster (Perfil)", y = "Profundidad (km)") +
+  labs(x = "", y = "Profundidad (km)") +
   tema + theme(legend.position = "none")
 
 fig1<-ggplotly(p_prof_cluster)
